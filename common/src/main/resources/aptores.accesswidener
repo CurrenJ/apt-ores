@@ -1,0 +1,7 @@
+accessWidener v2 named
+
+accessible class net/minecraft/world/level/levelgen/OreVeinifier$VeinType
+accessible field net/minecraft/world/level/levelgen/OreVeinifier$VeinType ore Lnet/minecraft/world/level/block/state/BlockState;
+accessible field net/minecraft/world/level/levelgen/OreVeinifier$VeinType rawOreBlock Lnet/minecraft/world/level/block/state/BlockState;
+mutable field net/minecraft/world/level/levelgen/OreVeinifier$VeinType ore Lnet/minecraft/world/level/block/state/BlockState;
+mutable field net/minecraft/world/level/levelgen/OreVeinifier$VeinType rawOreBlock Lnet/minecraft/world/level/block/state/BlockState;

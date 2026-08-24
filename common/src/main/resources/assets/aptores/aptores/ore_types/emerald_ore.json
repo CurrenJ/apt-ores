@@ -1,0 +1,4 @@
+{
+  "blocks": ["minecraft:emerald_ore", "minecraft:deepslate_emerald_ore"],
+  "overlay_texture": "aptores:block/overlay/emerald_ore_overlay"
+}

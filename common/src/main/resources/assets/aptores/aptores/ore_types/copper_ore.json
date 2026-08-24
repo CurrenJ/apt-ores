@@ -1,0 +1,4 @@
+{
+  "blocks": ["minecraft:copper_ore", "minecraft:deepslate_copper_ore"],
+  "overlay_texture": "aptores:block/overlay/copper_ore_overlay"
+}

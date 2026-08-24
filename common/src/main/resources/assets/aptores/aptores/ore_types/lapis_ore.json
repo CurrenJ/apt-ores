@@ -1,0 +1,4 @@
+{
+  "blocks": ["minecraft:lapis_ore", "minecraft:deepslate_lapis_ore"],
+  "overlay_texture": "aptores:block/overlay/lapis_ore_overlay"
+}

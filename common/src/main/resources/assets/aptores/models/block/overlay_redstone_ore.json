@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "aptores:block/overlay/redstone_ore_overlay"
+  }
+}

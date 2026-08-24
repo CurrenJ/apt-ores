@@ -1,0 +1,4 @@
+{
+  "blocks": ["minecraft:redstone_ore", "minecraft:deepslate_redstone_ore"],
+  "overlay_texture": "aptores:block/overlay/redstone_ore_overlay"
+}
