@@ -1,0 +1,86 @@
+plugins {
+    id 'com.gradleup.shadow'
+}
+
+architectury {
+    platformSetupLoomIde()
+    forge()
+}
+
+configurations {
+    common {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+    compileClasspath.extendsFrom common
+    developmentForge.extendsFrom common
+    // NOT runtimeClasspath: Loom's Forge dev launcher merges developmentForge's classpath
+    // (including common, via the line above) into one synthetic "generated_XXX" module so the
+    // TRANSFORMER layer gets a single, self-consistent copy of :common's classes. Separately
+    // extending plain runtimeClasspath from common puts a second, independently-loaded copy of
+    // grill24.aptores on the classpath used to build the parent SECURE-BOOTSTRAP module layer -
+    // colliding with the merged copy as a JPMS split package (java.lang.module.ResolutionException:
+    // "Modules aptores.common.dev and generated_XXX export package grill24.aptores") since both
+    // land in module layers that get resolved together at JVM bootstrap.
+
+    shadowBundle {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+}
+
+repositories {
+    maven {
+        name = 'MinecraftForge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
+
+dependencies {
+    forge "net.minecraftforge:forge:$rootProject.minecraft_version-$rootProject.forge_version"
+
+    common(project(path: ':common', configuration: 'namedElements')) { transitive = false }
+    shadowBundle project(path: ':common', configuration: 'transformProductionForge')
+}
+
+processResources {
+    inputs.property 'version', project.version
+
+    from project(":common").sourceSets.main.resources
+
+    filesMatching('META-INF/mods.toml') {
+        expand([
+            'version': project.version,
+            'mod_license': rootProject.mod_license,
+            'mod_id': rootProject.mod_id,
+            'mod_name': rootProject.mod_name,
+            'mod_authors': rootProject.mod_authors,
+            'mod_description': rootProject.mod_description,
+            'mod_icon': rootProject.mod_icon,
+            'mod_forge_version_range': "[${rootProject.forge_version},)",
+            'mod_minecraft_version_range': "[${rootProject.minecraft_version},)"
+        ])
+    }
+}
+
+shadowJar {
+    configurations = [project.configurations.shadowBundle]
+    archiveClassifier = 'dev-shadow'
+}
+
+remapJar {
+    inputFile.set shadowJar.archiveFile
+}
+
+sourceSets.main.resources.srcDir("src/main/generated")
+
+loom {
+    runs {
+        data {
+            data()
+            programArgs "--mod", "aptores",
+                        "--all",
+                        "--output", file("src/main/generated").absolutePath
+        }
+    }
+}

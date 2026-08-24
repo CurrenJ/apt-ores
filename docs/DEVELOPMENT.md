@@ -129,6 +129,21 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   of `ModelData`. `getRenderTypes` unions the backdrop's own render types with
   `RenderType.translucent()` so both layers actually get built into the chunk mesh.
 
+### `forge`
+- Same design as `neoforge` - Forge exposes the identical `ModelEvent.RegisterAdditional` /
+  `ModelEvent.ModifyBakingResult` pair (NeoForge inherited them from Forge at the fork, just under
+  `net.neoforged.*` instead of `net.minecraftforge.*`) - but Forge's `@Mod` annotation has no
+  `dist` parameter, so the mod is split into two classes instead of NeoForge's one:
+  - **`AptOresForge`** - the required `@Mod(MOD_ID)` entry point. Loader-neutral, does nothing,
+    exists only because Forge requires exactly one `@Mod`-annotated class per mod id.
+  - **`AptOresForgeClient`** - everything else (identical logic to `AptOresNeoForgeClient`), gated
+    with `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
+    Forge never loads this class - and therefore never resolves its client-only imports like
+    `BakedModel`/`Minecraft` - on a dedicated server.
+- **`AptOresModel`** / **`QuadHelper`** - byte-for-byte the same approach as `neoforge`'s, just
+  against `net.minecraftforge.client.model.data.*` / `net.minecraftforge.client.ChunkRenderTypeSet`
+  instead of the `net.neoforged.neoforge.*` equivalents.
+
 ### Assets (`common/src/main/resources/assets/aptores/`)
 - `aptores/ore_types/<type>.json` - the `OreTypeLoader` definitions for the 8 built-in ores (see
   `common` above for the schema). This is the same mechanism a third-party mod/pack uses to add
@@ -209,6 +224,34 @@ together resolved it.
 NeoForge's model doesn't have an equivalent gotcha: `getQuads`/`getRenderTypes` on that loader
 work directly off the vanilla `BakedModel` interface (no Fabric-style multi-material emitter),
 so `AptOresModel` never had this class of bug.
+
+### 3. Forge needed `architectury-loom` bumped to `1.17-SNAPSHOT` (and Gradle to 9.5.0) just to launch
+`:forge:runClient` crashed on startup with `1.11-SNAPSHOT` (the version `fabric`/`neoforge` still
+use fine) no matter what: fixing `forge/src/main/resources/META-INF/mods.toml` (Forge's own
+`mods.toml` schema uses `mandatory = true`, not NeoForge's `type = "required"`) only got past the
+mod-file-parsing stage. Deeper in, Forge's own early-display module-reads logic
+(`ImmediateWindowHandler`/`DisplayWindow`) threw `NullPointerException`/`NoSuchElementException`
+regardless of the `earlyWindowProvider` setting in `forge/run/config/fml.toml`. This is a
+confirmed upstream bug - [architectury-loom#308](https://github.com/architectury/architectury-loom/issues/308),
+MC 1.21.1 / Forge 52.1.x, same symptom - fixed by loom PR #343 ("Fix dev launch issues in newer
+Forge"), but that fix only landed on the loom `dev/1.17` branch, never backported to `dev/1.11`
+(confirmed via the GitHub API: `dev/1.11`'s last commit predates the fix). Getting it meant
+bumping `dev.architectury.loom` to `1.17-SNAPSHOT` and `architectury-plugin` to `3.5-SNAPSHOT` in
+the root `build.gradle`, which in turn requires Gradle 9.5.0 (`gradle/wrapper/gradle-wrapper.properties`)
+since 1.17-SNAPSHOT calls a `Configuration.extendsFrom(Provider[])` overload that doesn't exist on
+Gradle 8.x. All three platforms still build and run fine after this bump.
+
+Even after the bump, `forge/build.gradle`'s `configurations` block needed one more Forge-specific
+fix beyond what `neoforge/build.gradle` does: extend `developmentForge` from `common` (needed -
+Loom's Forge dev launcher merges it into one `generated_XXX` module so the actual game layer gets
+`:common`'s classes at all - `NoClassDefFoundError: grill24/aptores/OreTypeLoader` without it) but
+do **not** also extend plain `runtimeClasspath` from `common` (that puts a second, independently-
+loaded copy of the same package on the classpath used to build the parent module layer, either as
+a straight JPMS split package - `java.lang.module.ResolutionException: Modules aptores.common.dev
+and generated_XXX export package grill24.aptores` - or, if only `developmentForge` is removed
+instead, as a `LinkageError` the first time a common class crosses layers, since it's now bound to
+a different copy of the `minecraft` module than the mod code calling it). NeoForge doesn't need
+this distinction; `developmentNeoForge.extendsFrom common` alone is fine there.
 
 ## Building
 
