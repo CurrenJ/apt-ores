@@ -47,6 +47,6 @@ public final class QuadHelper {
             newVertices[baseIndex + 2] = Float.floatToRawIntBits(z);
         }
 
-        return new BakedQuad(newVertices, quad.getTintIndex(), quad.getDirection(), quad.getSprite(), quad.isShade());
+        return new BakedQuad(newVertices, quad.getTintIndex(), quad.getDirection(), quad.getSprite(), quad.isShade(), quad.getLightEmission());
     }
 }

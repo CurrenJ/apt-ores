@@ -7,6 +7,7 @@ import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.neoforge.client.model.AptOresModel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.client.resources.model.ModelResourceLocation;
 import net.minecraft.resources.ResourceLocation;
 import net.neoforged.api.distmarker.Dist;
@@ -36,13 +37,15 @@ public class AptOresNeoForgeClient implements IModBusEvent {
         // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded,
         // baked, and stitched into the block atlas even though no blockstate references them.
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            event.register(ModelResourceLocation.standalone(type.overlayModelId()));
+            event.register(type.overlayModelId());
         }
     }
 
     @SubscribeEvent
     public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
-        Map<ModelResourceLocation, BakedModel> models = event.getModels();
+        ModelBakery.BakingResult bakingResult = event.getBakingResult();
+        Map<ModelResourceLocation, BakedModel> models = bakingResult.blockStateModels();
+        Map<ResourceLocation, BakedModel> standaloneModels = bakingResult.standaloneModels();
 
         for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
             ResourceLocation blockId = entry.getKey().id();
@@ -51,7 +54,7 @@ public class AptOresNeoForgeClient implements IModBusEvent {
                 continue;
             }
 
-            BakedModel overlayModel = models.get(ModelResourceLocation.standalone(type.overlayModelId()));
+            BakedModel overlayModel = standaloneModels.get(type.overlayModelId());
             if (overlayModel == null) {
                 AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
                 continue;

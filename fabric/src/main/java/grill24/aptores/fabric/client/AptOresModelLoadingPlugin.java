@@ -37,7 +37,7 @@ public final class AptOresModelLoadingPlugin {
             context.addModels(overlayModelIds);
 
             context.modifyModelAfterBake().register((model, ctx) -> {
-                ResourceLocation resourceId = ctx.resourceId();
+                ResourceLocation resourceId = ctx.id();
 
                 for (OreTypeDefinition type : OreTypeRegistry.all()) {
                     if (type.overlayModelId().equals(resourceId)) {

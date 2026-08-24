@@ -3,21 +3,19 @@ package grill24.aptores.fabric.client.model;
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.fabric.client.OverlayModelRegistry;
-import net.fabricmc.fabric.api.renderer.v1.RendererAccess;
+import net.fabricmc.fabric.api.renderer.v1.Renderer;
 import net.fabricmc.fabric.api.renderer.v1.material.BlendMode;
 import net.fabricmc.fabric.api.renderer.v1.material.RenderMaterial;
+import net.fabricmc.fabric.api.renderer.v1.mesh.QuadEmitter;
 import net.fabricmc.fabric.api.renderer.v1.model.FabricBakedModel;
-import net.fabricmc.fabric.api.renderer.v1.render.RenderContext;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BakedQuad;
-import net.minecraft.client.renderer.block.model.ItemOverrides;
 import net.minecraft.client.renderer.block.model.ItemTransforms;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -26,6 +24,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -51,13 +50,13 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
     }
 
     private static RenderMaterial createOverlayMaterial() {
-        var renderer = RendererAccess.INSTANCE.getRenderer();
+        var renderer = Renderer.get();
         if (renderer == null) {
             return null;
         }
         return renderer.materialFinder()
-            .blendMode(0, BlendMode.TRANSLUCENT)
-            .disableDiffuse(0, true)
+            .blendMode(BlendMode.TRANSLUCENT)
+            .disableDiffuse(true)
             .find();
     }
 
@@ -71,45 +70,45 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
     }
 
     @Override
-    public void emitBlockQuads(BlockAndTintGetter blockView, BlockState state, BlockPos pos,
-                                Supplier<RandomSource> randomSupplier, RenderContext context) {
+    public void emitBlockQuads(QuadEmitter emitter, BlockAndTintGetter blockView, BlockState state, BlockPos pos,
+                                Supplier<RandomSource> randomSupplier, Predicate<@Nullable Direction> cullTest) {
         BlockState backdrop = BackdropSampler.sample(blockView, pos);
         RandomSource random = randomSupplier.get();
 
         BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
         if (isRealFabricModel(backdropModel)) {
-            ((FabricBakedModel) backdropModel).emitBlockQuads(blockView, backdrop, pos, randomSupplier, context);
+            ((FabricBakedModel) backdropModel).emitBlockQuads(emitter, blockView, backdrop, pos, randomSupplier, cullTest);
         } else {
-            emitVanillaQuads(backdropModel, backdrop, random, context, null);
+            emitVanillaQuads(emitter, backdropModel, backdrop, random, null);
         }
 
         BakedModel overlayModel = getOverlayModel();
         if (overlayModel != null && OVERLAY_MATERIAL != null) {
             if (isRealFabricModel(overlayModel)) {
-                ((FabricBakedModel) overlayModel).emitBlockQuads(blockView, state, pos, randomSupplier, context);
+                ((FabricBakedModel) overlayModel).emitBlockQuads(emitter, blockView, state, pos, randomSupplier, cullTest);
             } else {
-                emitVanillaQuads(overlayModel, state, random, context, OVERLAY_MATERIAL);
+                emitVanillaQuads(emitter, overlayModel, state, random, OVERLAY_MATERIAL);
             }
         }
     }
 
     @Override
-    public void emitItemQuads(ItemStack stack, Supplier<RandomSource> randomSupplier, RenderContext context) {
+    public void emitItemQuads(QuadEmitter emitter, Supplier<RandomSource> randomSupplier) {
         // No neighbors to sample for an item in a hand/GUI - fall back to a plain stone backdrop.
         BlockState defaultBackdrop = Blocks.STONE.defaultBlockState();
         RandomSource random = randomSupplier.get();
         BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(defaultBackdrop);
         if (isRealFabricModel(backdropModel)) {
-            ((FabricBakedModel) backdropModel).emitItemQuads(stack, randomSupplier, context);
+            ((FabricBakedModel) backdropModel).emitItemQuads(emitter, randomSupplier);
         } else if (backdropModel != null) {
-            emitVanillaQuads(backdropModel, defaultBackdrop, random, context, null);
+            emitVanillaQuads(emitter, backdropModel, defaultBackdrop, random, null);
         }
 
         BakedModel overlayModel = getOverlayModel();
         if (isRealFabricModel(overlayModel)) {
-            ((FabricBakedModel) overlayModel).emitItemQuads(stack, randomSupplier, context);
+            ((FabricBakedModel) overlayModel).emitItemQuads(emitter, randomSupplier);
         } else if (overlayModel != null) {
-            emitVanillaQuads(overlayModel, defaultBackdrop, random, context, OVERLAY_MATERIAL);
+            emitVanillaQuads(emitter, overlayModel, defaultBackdrop, random, OVERLAY_MATERIAL);
         }
     }
 
@@ -124,15 +123,15 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
         return model instanceof FabricBakedModel fabricModel && !fabricModel.isVanillaAdapter();
     }
 
-    private void emitVanillaQuads(BakedModel model, BlockState state, RandomSource random,
-                                   RenderContext context, @Nullable RenderMaterial material) {
+    private void emitVanillaQuads(QuadEmitter emitter, BakedModel model, BlockState state, RandomSource random,
+                                   @Nullable RenderMaterial material) {
         for (Direction direction : Direction.values()) {
             for (BakedQuad quad : model.getQuads(state, direction, random)) {
-                context.getEmitter().fromVanilla(quad, material, direction).emit();
+                emitter.fromVanilla(quad, material, direction).emit();
             }
         }
         for (BakedQuad quad : model.getQuads(state, null, random)) {
-            context.getEmitter().fromVanilla(quad, material, quad.getDirection()).emit();
+            emitter.fromVanilla(quad, material, quad.getDirection()).emit();
         }
     }
 
@@ -172,18 +171,8 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
     }
 
     @Override
-    public boolean isCustomRenderer() {
-        return false;
-    }
-
-    @Override
     public TextureAtlasSprite getParticleIcon() {
         return vanillaOreModel.getParticleIcon();
-    }
-
-    @Override
-    public ItemOverrides getOverrides() {
-        return ItemOverrides.EMPTY;
     }
 
     @Override
