@@ -36,4 +36,5 @@ as it's loaded Apt Ores will start compositing that ore's backdrop + overlay aut
 ## Development notes
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for architecture details, extension points, and
-known gotchas.
+known gotchas, and [`docs/PORTING.md`](docs/PORTING.md) for a general playbook when bumping this
+project to a newer Minecraft version.
