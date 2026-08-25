@@ -71,6 +71,19 @@ public final class BackdropSampler {
         Identifier blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
         // Don't let one ore's backdrop be "another ore" - that would render nonsensically since
         // the neighbor is itself being intercepted and rendered as a composite.
-        return !OreTypeRegistry.isAdaptedOreBlockId(blockId);
+        if (OreTypeRegistry.isAdaptedOreBlockId(blockId)) {
+            return false;
+        }
+        // Exclude grass and tinted blocks that shouldn't be used as backdrops
+        return !isBlacklistedBlock(state);
+    }
+
+    private static boolean isBlacklistedBlock(BlockState state) {
+        // Blocks with biome-dependent coloring or visual effects that shouldn't be used as ore backdrops
+        return state.is(Blocks.GRASS_BLOCK) ||
+               state.is(Blocks.MYCELIUM) ||
+               state.is(Blocks.PODZOL) ||
+               state.is(Blocks.CRIMSON_NYLIUM) ||
+               state.is(Blocks.WARPED_NYLIUM);
     }
 }
