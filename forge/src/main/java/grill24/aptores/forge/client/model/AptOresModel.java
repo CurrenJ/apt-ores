@@ -4,10 +4,12 @@ import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.block.model.BlockModelPart;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.state.BlockState;
@@ -17,15 +19,16 @@ import net.minecraftforge.client.model.data.ModelProperty;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Purely-visual composite: the backdrop layer is the live-sampled neighbor block's own block
- * state model parts, the overlay layer is a single, pre-baked {@link BlockModelPart} built from
- * this ore's cutout fragment texture (see {@code AptOresForgeClient}). No world state is written -
- * {@link #getModelData} just samples the six neighbors fresh every mesh rebuild, the same way
- * vanilla already re-triggers a neighborhood remesh for AO/connection-dependent rendering, so
- * this stays in sync automatically when a neighbor is placed or broken.
+ * state model parts, the overlay layer is this ore's cutout fragment texture (the pinned overlay
+ * model from {@code AptOresForgeClient}). No world state is written - {@link #getModelData} just
+ * samples the six neighbors fresh every mesh rebuild, the same way vanilla already re-triggers a
+ * neighborhood remesh for AO/connection-dependent rendering, so this stays in sync automatically
+ * when a neighbor is placed or broken.
  *
  * <p>Unlike NeoForge (which dropped {@code ModelData} from block rendering entirely in 1.21.5 in
  * favor of passing {@code level}/{@code pos} directly into {@code collectParts}), regular
@@ -39,22 +42,23 @@ import java.util.List;
 public class AptOresModel implements BlockStateModel {
     public static final ModelProperty<BlockState> BACKDROP_PROPERTY = new ModelProperty<>();
 
+    private static final float OVERLAY_OFFSET = 0.001f;
     private static final ChunkRenderTypeSet OVERLAY_TYPES = ChunkRenderTypeSet.of(RenderType.translucent());
 
     private final OreTypeDefinition oreType;
     private final BlockStateModel vanillaOreModel;
-    private final BlockModelPart overlayPart;
+    private final BlockStateModel overlayModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel, BlockModelPart overlayPart) {
+    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel, BlockStateModel overlayModel) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
-        this.overlayPart = overlayPart;
+        this.overlayModel = overlayModel;
     }
 
     @Override
     public void collectParts(@NotNull RandomSource rand, @NotNull List<BlockModelPart> parts) {
         vanillaOreModel.collectParts(rand, parts);
-        parts.add(overlayPart);
+        collectOverlayParts(rand, parts);
     }
 
     @Override
@@ -73,7 +77,15 @@ public class AptOresModel implements BlockStateModel {
         }
 
         if (renderType == null || OVERLAY_TYPES.contains(renderType)) {
-            parts.add(overlayPart);
+            collectOverlayParts(rand, parts);
+        }
+    }
+
+    private void collectOverlayParts(RandomSource rand, List<BlockModelPart> parts) {
+        List<BlockModelPart> overlayParts = new ArrayList<>();
+        overlayModel.collectParts(rand, overlayParts);
+        for (BlockModelPart part : overlayParts) {
+            parts.add(new OverlayPart(part));
         }
     }
 
@@ -116,5 +128,34 @@ public class AptOresModel implements BlockStateModel {
         }
 
         return ChunkRenderTypeSet.union(backdropTypes, OVERLAY_TYPES);
+    }
+
+    /** Wraps one of the overlay's own parts, offsetting its quads to avoid z-fighting. */
+    private static final class OverlayPart implements BlockModelPart {
+        private final BlockModelPart delegate;
+
+        OverlayPart(BlockModelPart delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public List<BakedQuad> getQuads(Direction direction) {
+            List<BakedQuad> raw = delegate.getQuads(direction);
+            List<BakedQuad> offset = new ArrayList<>(raw.size());
+            for (BakedQuad quad : raw) {
+                offset.add(QuadHelper.offsetQuad(quad, direction, OVERLAY_OFFSET));
+            }
+            return offset;
+        }
+
+        @Override
+        public boolean useAmbientOcclusion() {
+            return delegate.useAmbientOcclusion();
+        }
+
+        @Override
+        public TextureAtlasSprite particleIcon() {
+            return delegate.particleIcon();
+        }
     }
 }

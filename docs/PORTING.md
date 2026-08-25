@@ -175,6 +175,13 @@ divergence rather than a missing hook:
   `javap -p` on both loaders' real jars side by side, not assumed from one and copied to the
   other.
 
+**Canonical Forge overlay-pinning (cross-version review):** regular Forge *does* have a hook for
+pinning an unreferenced model — `ModelEvent.RegisterModelStateDefinitions`, available since 1.21.4.
+Register a plain, never-registered `Block`'s `StateDefinition` under a synthetic id backed by a
+`blockstates/*.json` file, and the model is baked into `BakingResult.blockStateModels()` like a real
+block. The throwaway item-model-JSON workaround described above was never necessary (it stemmed from
+missing this event) and is superseded — every port now uses `RegisterModelStateDefinitions`.
+
 **Lesson: verify each loader's relevant API independently. Do not port NeoForge's fix to Forge
 (or vice versa) without re-checking that the same classes/methods still exist there.** If one
 loader's public API for something this mod needs has genuinely disappeared, look for:
