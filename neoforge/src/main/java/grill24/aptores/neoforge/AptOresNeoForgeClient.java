@@ -45,6 +45,13 @@ public class AptOresNeoForgeClient implements IModBusEvent {
         Map<ModelResourceLocation, BakedModel> models = event.getModels();
 
         for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
+            // Only intercept blockstate models, never the inventory (block item) model - the
+            // background swap is a purely in-world, situational effect and the item icon should
+            // keep showing its own baked (e.g. deepslate) texture untouched.
+            if (entry.getKey().variant().equals(ModelResourceLocation.INVENTORY_VARIANT)) {
+                continue;
+            }
+
             ResourceLocation blockId = entry.getKey().id();
             OreTypeDefinition type = OreTypeRegistry.byBlockId(blockId);
             if (type == null) {
