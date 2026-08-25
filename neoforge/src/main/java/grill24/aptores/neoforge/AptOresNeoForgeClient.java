@@ -4,18 +4,19 @@ import grill24.aptores.AptOres;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
+import grill24.aptores.neoforge.client.OverlayModelRegistry;
 import grill24.aptores.neoforge.client.model.AptOresModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.client.resources.model.ModelBakery;
-import net.minecraft.client.resources.model.ModelResourceLocation;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.event.IModBusEvent;
 import net.neoforged.neoforge.client.event.ModelEvent;
+import net.neoforged.neoforge.client.model.standalone.SimpleUnbakedStandaloneModel;
+import net.neoforged.neoforge.client.model.standalone.StandaloneModelKey;
+import net.neoforged.neoforge.client.model.standalone.StandaloneModelLoader;
 
 import java.util.Map;
 
@@ -26,41 +27,53 @@ import java.util.Map;
  * target ore's baked model for a composite that samples its neighbors live - the same technique
  * connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  */
-@EventBusSubscriber(modid = AptOres.MOD_ID, value = Dist.CLIENT)
 @Mod(value = AptOres.MOD_ID, dist = Dist.CLIENT)
-public class AptOresNeoForgeClient implements IModBusEvent {
+public class AptOresNeoForgeClient {
+    public AptOresNeoForgeClient(IEventBus modEventBus) {
+        modEventBus.addListener(this::onRegisterStandalone);
+        modEventBus.addListener(this::onModifyBakingResult);
+        modEventBus.addListener(this::onBakingCompleted);
+    }
 
-    @SubscribeEvent
-    public static void onRegisterAdditionalModels(ModelEvent.RegisterAdditional event) {
+    private void onRegisterStandalone(ModelEvent.RegisterStandalone event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
+        OverlayModelRegistry.reset();
 
-        // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded,
-        // baked, and stitched into the block atlas even though no blockstate references them.
+        // Pin our overlay-only (cube_all + cutout ore texture) models as standalone models so
+        // they get loaded, baked, and stitched into the block atlas even though no blockstate
+        // references them. The baked BlockStateModel is resolved into OverlayModelRegistry at
+        // BakingCompleted time.
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            event.register(type.overlayModelId());
+            StandaloneModelKey<BlockStateModel> key = new StandaloneModelKey<>(() -> "aptores:overlay_" + type.name());
+            event.register(key, SimpleUnbakedStandaloneModel.blockStateModel(type.overlayModelId()));
+            OverlayModelRegistry.putKey(type, key);
         }
     }
 
-    @SubscribeEvent
-    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
-        ModelBakery.BakingResult bakingResult = event.getBakingResult();
-        Map<ModelResourceLocation, BakedModel> models = bakingResult.blockStateModels();
-        Map<ResourceLocation, BakedModel> standaloneModels = bakingResult.standaloneModels();
-
-        for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
-            ResourceLocation blockId = entry.getKey().id();
-            OreTypeDefinition type = OreTypeRegistry.byBlockId(blockId);
-            if (type == null) {
-                continue;
+    private void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+        // The baking result's block-state map is mutable; swap each target ore's model for a
+        // composite that samples its neighbors live.
+        Map<BlockState, BlockStateModel> models = event.getBakingResult().blockStateModels();
+        for (Map.Entry<BlockState, BlockStateModel> entry : models.entrySet()) {
+            OreTypeDefinition type = OreTypeRegistry.byBlockId(BuiltInRegistries.BLOCK.getKey(entry.getKey().getBlock()));
+            if (type != null) {
+                entry.setValue(new AptOresModel(type, entry.getValue()));
             }
+        }
+    }
 
-            BakedModel overlayModel = standaloneModels.get(type.overlayModelId());
-            if (overlayModel == null) {
-                AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
-                continue;
+    private void onBakingCompleted(ModelEvent.BakingCompleted event) {
+        // Resolve every standalone overlay key to its baked BlockStateModel now that baking has
+        // finished, so the render hot path does a plain map lookup.
+        StandaloneModelLoader.BakedModels standalone = event.getBakingResult().standaloneModels();
+        for (OreTypeDefinition type : OreTypeRegistry.all()) {
+            StandaloneModelKey<BlockStateModel> key = OverlayModelRegistry.getKey(type);
+            if (key != null) {
+                BlockStateModel overlay = standalone.get(key);
+                if (overlay != null) {
+                    OverlayModelRegistry.putBaked(type, overlay);
+                }
             }
-
-            entry.setValue(new AptOresModel(type, entry.getValue(), overlayModel));
         }
     }
 }

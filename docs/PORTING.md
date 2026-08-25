@@ -153,6 +153,16 @@ loader's public API for something this mod needs has genuinely disappeared, look
    commitment (new infra, more version fragility) than options 1-2, and should be a deliberate
    choice, not a shortcut.
 
+**Update from the 1.21.11 port**: regular Forge still has no `RegisterAdditional`/`RegisterStandalone`
+equivalent (re-confirmed by decompiling the real 61.2.0 jar), so the item-model-shadow workaround
+above is still the right *shape* of fix - but the 1.21.4-era version of it (unwrap the shadow
+item's baked model via a public field) stopped working when Mojang's model rework made that field
+private with no accessor (see `docs/DEVELOPMENT.md` §6). The fix this time was a narrowly-scoped
+reflective field read plus manually rebuilding an equivalent model part from the flattened quads -
+closer to option 2 (side door) than option 3 (mixin) in spirit, but worth explicitly re-evaluating
+against options 1 and 2 again on the *next* port rather than assuming reflection is now the
+permanent answer: Forge's extension surface for this exact gap may change again.
+
 ## 5. Recurring categories of breakage to expect (grounded in the 1.21.1→1.21.4 diff)
 
 These are the specific things that broke last time, listed as *categories* so you know what
@@ -177,6 +187,18 @@ class of change to look for even if the exact API differs again next time:
   rewrites so far.
 - **Loader-specific event/hook removal** (see §4). This is the one category that isn't just
   "update a call site" - budget real design time if it recurs.
+- **Whole-interface replacement of the block model type** (found in the 1.21.11 port). Mojang
+  replaced `BakedModel` for block rendering with `BlockStateModel`/`BlockModelPart`
+  (`collectParts(...)` instead of `getQuads(...)`/`getRenderTypes(...)`); this is bigger than the
+  "interface shrinking" bullet above - not a few methods removed, but the whole type each loader's
+  composite model implemented, which forces re-deriving each loader's position-aware composition
+  hook from scratch (see `docs/DEVELOPMENT.md` §5). If a future version does this again to
+  `BlockStateModel` itself, expect the same scale of rewrite, not a mechanical patch.
+- **Widely-used core classes get renamed outright**, not just moved or restructured -
+  `ResourceLocation` became `Identifier` in 1.21.11 with an identical API, confirmed only by
+  `javap`-ing the real jar after `ResourceLocation` silently stopped resolving. Don't assume a
+  "cannot find symbol" on a class you're confident about means you mistyped something; grep the
+  target version's jar for a same-shaped class under a new name before assuming a bigger problem.
 
 ## 6. After it compiles
 
@@ -207,3 +229,64 @@ should:
 - Report honestly if dependency resolution fails outright (network/repo access) - that's a
   different, more fundamental blocker than an API break, and worth surfacing immediately rather
   than working around.
+
+## Prior-version port history (learnings carried forward)
+
+Each port was done independently from the 1.21.4 base, so this file's own sections above record
+what *this* port observed jumping straight from 1.21.4 to the target, and may describe a change
+that actually first landed in an earlier intermediate version as if it were new. The subsections
+below consolidate each intermediate version's findings, correctly attributed, so no later port
+has to re-derive them.
+
+### From 1.21.5 — `BakedModel` → `BlockStateModel`, and the loaders' first real divergence
+- Vanilla replaced `BakedModel` (`net.minecraft.client.resources.model`) with `BlockStateModel` +
+  `BlockModelPart` (`net.minecraft.client.renderer.block.model`) for block rendering, on **all
+  three loaders** (Fabric's `FabricBakedModel` layer no longer insulated it from this churn).
+- Fabric's model-loading API became typed: `Context.addModel(ExtraModelKey<T>,
+  UnbakedExtraModel<T>)` / `Context.modifyBlockModelAfterBake()`; `FabricBakedModel`/
+  `isVanillaAdapter()` became `FabricBlockStateModel`/`FabricBlockModelPart` (mixed onto the
+  vanilla `BlockStateModel`/`BlockModelPart` interfaces via an *interface* mixin).
+- NeoForge grew a typed `StandaloneModelKey`/`ModelEvent.RegisterStandalone` facility.
+- Regular Forge still has **no** standalone-model registration at all; the 1.21.4 throwaway
+  item-model-JSON workaround carried forward, adapted to recover quads from `BlockModelWrapper`'s
+  now-private `quads` field via a narrow reflective read.
+- **NeoForge and Forge quietly diverged on two details of the same rework**: `BakedQuad`'s extra
+  boolean accessor is `hasAmbientOcclusion()` on NeoForge but `ambientOcclusion()` on Forge;
+  `SimpleModelWrapper` gained a 4-arg ctor (trailing `RenderType`) on NeoForge but stayed 3-arg on
+  Forge. Each compiles in isolation and only fails on the other loader — verify each loader's jar
+  independently (`javap`).
+- §5 lesson: a documented "always-true `instanceof` is a bug" caveat can flip to "always-true and
+  that's fine" after a rewrite — re-verify the actual default-method body (see `DEVELOPMENT.md`
+  bug #2 vs #2a) rather than assuming a past caveat still holds.
+
+### From 1.21.6 — Forge's corrupted "Latest" jar, and `RegisterModelStateDefinitions`
+- `forge_version`: **don't trust "Latest"/"Recommended" blindly.** Forge 56.0.9 produced a
+  corrupted merged Minecraft+Forge jar (`:forge:compileJava` failing with ~50 nonsensical `cannot
+  find symbol` errors), while 56.0.8 compiled cleanly. If a "Latest"/"Recommended" build does this,
+  **bisect `forge_version` across nearby builds first** (`sed` + `:forge:compileJava` per
+  candidate) before assuming a Loom/tooling dead end.
+- Forge gained `ModelEvent.RegisterModelStateDefinitions` (new in 1.21.6): register a
+  `StateDefinition` from a plain never-registered `new Block(...)` under a synthetic id with a
+  matching `assets/aptores/blockstates/overlay_*.json`, and the overlay is baked through the
+  normal blockstate pipeline into `BakingResult.blockStateModels()` — the official replacement for
+  the item-JSON shadow trick. (Caveat: a third-party ore type added purely via an `ore_types` JSON
+  still needs to ship a matching blockstate JSON to get baked on Forge.)
+- `BakedQuad` gained a 7th ctor param (`ambientOcclusion`) and its accessors became record-style
+  (`direction()`/`vertices()`/`tintIndex()`/...). As of 1.21.6, item models bake entirely
+  separately from block-state models, so composite classes no longer need an item path.
+
+### From 1.21.9 — per-part render layers, and item rendering decoupled
+- **Chunk render-layer selection moved from per-model to per-part.** `RenderType.translucent()` is
+  gone; use the `ChunkSectionLayer` enum and each loader's per-`BlockModelPart` override
+  (`getRenderType(BlockState)` on NeoForge, `layer()`/`layerFast()` on Forge). That per-part
+  override is what makes a solid-backdrop + translucent-overlay composite possible at all.
+- `ModelBakery.BakingResult.blockStateModels()` became keyed by `BlockState` directly.
+- NeoForge's `ModelEvent.RegisterAdditional` was removed, replaced by `ModelEvent.RegisterStandalone`
+  + `StandaloneModelKey` (`SimpleUnbakedStandaloneModel.quadCollection(id)`).
+- Forge's event API moved: `@SubscribeEvent` is now
+  `net.minecraftforge.eventbus.api.listener.SubscribeEvent`, and events became records with
+  accessor-style getters (`ModifyBakingResult.getResults()`); `@Mod.EventBusSubscriber` +
+  `@SubscribeEvent` still works unchanged otherwise.
+- **Item rendering fully decoupled from block rendering** — mutating `blockStateModels()` no longer
+  affects `itemStackModels()`, so held/inventory ore items show the plain vanilla texture (a known
+  regression, not yet fixed — see `DEVELOPMENT.md`).

@@ -1,6 +1,6 @@
 package grill24.aptores;
 
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 
 import java.util.List;
 
@@ -12,12 +12,12 @@ import java.util.List;
  */
 public record OreTypeDefinition(
     String name,
-    List<ResourceLocation> blockIds,
-    List<ResourceLocation> blockModelIds,
-    ResourceLocation overlayTexture,
-    ResourceLocation overlayModelId
+    List<Identifier> blockIds,
+    List<Identifier> blockModelIds,
+    Identifier overlayTexture,
+    Identifier overlayModelId
 ) {
-    public boolean isOreBlockId(ResourceLocation blockId) {
+    public boolean isOreBlockId(Identifier blockId) {
         return blockIds.contains(blockId);
     }
 }
