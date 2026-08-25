@@ -15,9 +15,9 @@ public final class QuadHelper {
      * z-fight with the backdrop layer directly beneath it.
      */
     public static BakedQuad offsetQuad(BakedQuad quad, @Nullable Direction side, float offset) {
-        Direction direction = side != null ? side : quad.getDirection();
+        Direction direction = side != null ? side : quad.direction();
 
-        int[] originalVertices = quad.getVertices();
+        int[] originalVertices = quad.vertices();
         int[] newVertices = originalVertices.clone();
 
         float offsetX = 0, offsetY = 0, offsetZ = 0;
@@ -45,6 +45,7 @@ public final class QuadHelper {
             newVertices[baseIndex + 2] = Float.floatToRawIntBits(z);
         }
 
-        return new BakedQuad(newVertices, quad.getTintIndex(), quad.getDirection(), quad.getSprite(), quad.isShade(), quad.getLightEmission());
+        return new BakedQuad(newVertices, quad.tintIndex(), quad.direction(), quad.sprite(), quad.shade(),
+            quad.lightEmission(), quad.ambientOcclusion());
     }
 }

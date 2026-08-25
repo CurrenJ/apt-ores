@@ -86,63 +86,80 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   entrypoint, `"client"` in `fabric.mod.json`). On every resource reload:
   1. `OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()))`
      re-reads every `ore_types` JSON off the just-updated resource manager.
-  2. `context.addModels(...)` pins the overlay model ids so they get loaded, baked, and their
-     textures stitched into the block atlas even though no blockstate/item references them.
-  3. `context.modifyModelAfterBake().register(...)` inspects every baked model as it comes
-     through:
-     - if its resource id matches one of our overlay model ids, the baked overlay model is
-       stashed in `OverlayModelRegistry` (keyed by `OreTypeDefinition`) and returned unchanged;
-     - if its resource id matches one of our target ore block model ids (via
-       `OreTypeRegistry.byBlockModelId`), the vanilla baked model is wrapped in a new
-       `AptOresBakedModel` and that replaces it;
-     - anything else passes through untouched.
-- **`AptOresBakedModel`** - implements both `BakedModel` and `FabricBakedModel`.
-  `emitBlockQuads` samples the backdrop, fetches its real baked model via
-  `Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop)`, emits its quads as the
-  base layer, then emits the overlay model's quads (translucent material, `disableDiffuse`) on
-  top. **See the "Fabric FabricBakedModel gotcha" section below before touching this file** -
-  the composition logic looks simple but has one very unintuitive trap that cost real debugging
-  time.
-- **`OverlayModelRegistry`** - a tiny static `Map<OreTypeDefinition, BakedModel>`, reset and
-  repopulated on every resource reload by the plugin above. Exists because Fabric's
-  `modifyModelAfterBake` fires per-model as baking proceeds rather than handing back one batch
-  map (unlike NeoForge's `ModifyBakingResult`, see below) - by the time anything actually
-  renders, every bake in the reload has finished, so a lazy lookup here is always safe regardless
-  of bake order.
-- **`QuadHelper.offsetQuad`** - only used by the `getQuads(...)` fallback (see below), nudges a
-  quad along its face normal to prevent z-fighting between backdrop and overlay.
+  2. `context.addModel(key, SimpleUnbakedExtraModel.blockStateModel(...))` pins each ore's
+     overlay-only model id under a fresh `ExtraModelKey<BlockStateModel>` so it gets loaded,
+     baked, and stitched into the block atlas even though no blockstate/item references it
+     directly (Fabric's typed replacement, as of 1.21.5, for the old untyped
+     `context.addModels(List<ResourceLocation>)`).
+  3. `context.modifyBlockModelAfterBake().register(...)` fires once per baked block-state model
+     with the real `BlockState` available via `ctx.state()` (no more matching a
+     `ModelResourceLocation`/model id back to a block by hand): if `OreTypeRegistry.byBlockId`
+     recognizes it, the original model is wrapped in a new `AptOresBakedModel` carrying that
+     type's `ExtraModelKey`; anything else passes through untouched.
+- **`AptOresBakedModel`** - implements both `BlockStateModel` (vanilla's block-model type, shared
+  with NeoForge/Forge since the 1.21.5 rework) and `FabricBlockStateModel` (the Fabric Renderer
+  API's position-aware quad-emission interface, mixed onto every `BlockStateModel` - see the
+  "Fabric FabricBlockStateModel is always true (and that's fine now)" section below before
+  touching this file). `emitQuads` samples the backdrop, fetches its real block-state model via
+  `Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop)`, delegates to it for the
+  base layer, then emits the overlay's quads (translucent material, `disableDiffuse`) on top. The
+  overlay's baked `BlockStateModel` is looked up lazily via
+  `FabricBakedModelManager.getModel(overlayKey)` on first render rather than cached at bake time,
+  since nothing guarantees our `ExtraModelKey`'s own bake has finished by the time
+  `modifyBlockModelAfterBake` fires for an ore block earlier in the same reload - only that it's
+  finished before anything actually renders.
+- **`QuadHelper.offsetQuad`** - nudges a quad along its face normal to prevent z-fighting between
+  backdrop and overlay; used both by `AptOresBakedModel`'s real emission path and its
+  position-blind `collectParts` fallback.
 
 ### `neoforge`
-- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterAdditional`
-  first calls `OreTypeRegistry.reload(OreTypeLoader.load(...))` (same as Fabric), then pins the
-  overlay models (same purpose as Fabric's `addModels`), using
-  `ModelResourceLocation.standalone(...)` since these aren't tied to any blockstate/item.
+- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterStandalone`
+  first calls `OreTypeRegistry.reload(OreTypeLoader.load(...))` (same as Fabric), then pins each
+  ore's overlay model under a `StandaloneModelKey<QuadCollection>` (NeoForge's 1.21.5 typed
+  replacement for the old `ModelResourceLocation.standalone(...)` + `RegisterAdditional`
+  mechanism - conceptually the same idea as Fabric's `ExtraModelKey` above).
   `ModelEvent.ModifyBakingResult` then gets the *whole* bake result as one mutable
-  `Map<ModelResourceLocation, BakedModel>` - for every entry whose block id matches an
-  `OreTypeDefinition`, it looks up that type's already-baked overlay model from the *same* map and
-  replaces the entry's value with a new `AptOresModel` wrapping both. Much simpler than Fabric's
-  per-model-callback + registry approach, since NeoForge hands you the complete map in one shot.
-- **`AptOresModel`** - NeoForge's `IDynamicBakedModel` equivalent of the Fabric composite.
-  Because `getQuads(...)` on this loader doesn't receive a `BlockAndTintGetter`/`BlockPos`
-  directly, the backdrop is sampled in `getModelData(level, pos, state, modelData)` (which *does*
-  get position) and stashed in a `ModelProperty<BlockState>`; `getQuads` then reads it back out
-  of `ModelData`. `getRenderTypes` unions the backdrop's own render types with
-  `RenderType.translucent()` so both layers actually get built into the chunk mesh.
+  `Map<BlockState, BlockStateModel>` (keyed by real `BlockState`, not a `ModelResourceLocation`
+  needing a manual block-id lookup) - for every entry whose block matches an `OreTypeDefinition`,
+  it looks up that type's already-baked overlay `QuadCollection` from `bakingResult.standaloneModels()`,
+  builds a single translucent, outward-offset `BlockModelPart` from it via `SimpleModelWrapper`,
+  and replaces the entry's value with a new `AptOresModel` wrapping both. Much simpler than
+  Fabric's per-model-callback + lazy-lookup approach, since NeoForge hands you the complete map
+  (and the standalone models, already baked) in one shot.
+- **`AptOresModel`** - implements vanilla's `BlockStateModel`. NeoForge patches an extra,
+  position-aware `collectParts(BlockAndTintGetter, BlockPos, BlockState, RandomSource, List)`
+  overload directly onto `BlockStateModel` (not present on plain vanilla/Fabric - see
+  `docs/PORTING.md` §4), so the backdrop is sampled and composited straight from that overload;
+  the position-blind `collectParts(RandomSource, List)` overload is a fallback for contexts with
+  no position (e.g. inventory/GUI).
 
 ### `forge`
-- Same design as `neoforge` - Forge exposes the identical `ModelEvent.RegisterAdditional` /
-  `ModelEvent.ModifyBakingResult` pair (NeoForge inherited them from Forge at the fork, just under
-  `net.neoforged.*` instead of `net.minecraftforge.*`) - but Forge's `@Mod` annotation has no
-  `dist` parameter, so the mod is split into two classes instead of NeoForge's one:
+- Regular (Minecraft)Forge 1.21.5 has **no equivalent of NeoForge's `StandaloneModelKey`/
+  `RegisterStandalone`** - the same real gap documented for Forge 1.21.4 in `docs/PORTING.md`.
+  Each overlay-only model is instead shadowed by a throwaway client item definition
+  (`assets/aptores/items/overlay_*.json`); Minecraft's own per-item model JSON loader indexes
+  these by file path regardless of whether a real item exists with that id, so they surface in
+  `ModelBakery.BakingResult.itemStackModels()` as a `BlockModelWrapper` - whose baked quads are
+  recovered with a narrow reflective field read (`BlockModelWrapper`'s `quads` field has no
+  public accessor on this loader as of 1.21.5). Forge's `@Mod` annotation has no `dist`
+  parameter, so the mod is split into two classes instead of NeoForge's one:
   - **`AptOresForge`** - the required `@Mod(MOD_ID)` entry point. Loader-neutral, does nothing,
     exists only because Forge requires exactly one `@Mod`-annotated class per mod id.
-  - **`AptOresForgeClient`** - everything else (identical logic to `AptOresNeoForgeClient`), gated
-    with `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
+  - **`AptOresForgeClient`** - everything else, gated with
+    `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
     Forge never loads this class - and therefore never resolves its client-only imports like
-    `BakedModel`/`Minecraft` - on a dedicated server.
-- **`AptOresModel`** / **`QuadHelper`** - byte-for-byte the same approach as `neoforge`'s, just
-  against `net.minecraftforge.client.model.data.*` / `net.minecraftforge.client.ChunkRenderTypeSet`
-  instead of the `net.neoforged.neoforge.*` equivalents.
+    `Minecraft` - on a dedicated server.
+- **`AptOresModel`** - same `BlockStateModel` + position-aware-`ModelData` design as `neoforge`'s
+  (via `net.minecraftforge.client.model.data.*` / `net.minecraftforge.client.ChunkRenderTypeSet`
+  instead of the `net.neoforged.neoforge.*` equivalents), since regular Forge *did* keep the
+  `ModelData` mechanism from 1.21.4 (unlike NeoForge, which moved to the position-aware
+  `collectParts` overload described above - see that file's class javadoc for the full contrast).
+- **`QuadHelper`** - looks byte-for-byte like `neoforge`'s but is **not** - Forge's patched
+  `BakedQuad` names its extra boolean field's accessor `ambientOcclusion()`, while NeoForge's
+  is `hasAmbientOcclusion()`; likewise Forge's `SimpleModelWrapper` kept vanilla's plain 3-arg
+  constructor (`QuadCollection, boolean, TextureAtlasSprite`) while NeoForge's gained a 4-arg
+  overload taking a trailing `RenderType`. Confirmed by decompiling both loaders' real 1.21.5
+  jars, not assumed - see `docs/PORTING.md` §4/§7.
 
 ### Assets (`common/src/main/resources/assets/aptores/`)
 - `aptores/ore_types/<type>.json` - the `OreTypeLoader` definitions for the 8 built-in ores (see
@@ -183,7 +200,11 @@ because it was generated once by whatever Architectury project wizard was origin
 Architectury project without also copying every per-subproject `gradle.properties`, you will hit
 this again.**
 
-### 2. Fabric: `instanceof FabricBakedModel` is always true - check `isVanillaAdapter()` instead
+### 2. Fabric (MC ≤1.21.4): `instanceof FabricBakedModel` is always true - check `isVanillaAdapter()` instead
+**Superseded on MC 1.21.5+** - see the next section for the current (`FabricBlockStateModel`)
+equivalent, which looks structurally the same but is *not* the same bug. Kept here for history
+and because the same trap shape can recur on a future rewrite.
+
 This one is subtle and caused a real, confusing bug (backdrop rendered as solid black, overlay
 rendered fine on top - see `AptOresBakedModel` git history around the "black background" fix).
 
@@ -221,9 +242,30 @@ happened to mask each other during debugging - fixing `.emit()` alone did nothin
 buggy `instanceof` check meant that code path was never even reached for stone; only fixing both
 together resolved it.
 
-NeoForge's model doesn't have an equivalent gotcha: `getQuads`/`getRenderTypes` on that loader
-work directly off the vanilla `BakedModel` interface (no Fabric-style multi-material emitter),
-so `AptOresModel` never had this class of bug.
+NeoForge's model doesn't have an equivalent gotcha: `getQuads`/`getRenderTypes` (≤1.21.4) and
+`collectParts` (1.21.5+) on that loader work directly off the vanilla model interface (no
+Fabric-style multi-material emitter), so `AptOresModel` never had this class of bug.
+
+### 2a. Fabric (MC 1.21.5+): `instanceof FabricBlockStateModel` is *also* always true - but this time it's not a bug
+The 1.21.5 Fabric Renderer API rewrite (`FabricBakedModel` → `FabricBlockStateModel` +
+`FabricBlockModelPart`, see `AptOresBakedModel`) looks like the same trap as bug #2 above at
+first glance: `fabric-renderer-api-v1` mixes `FabricBlockStateModel` onto **every**
+`BlockStateModel` again, so `instanceof FabricBlockStateModel` is again always true for any
+model, vanilla or not.
+
+The difference (confirmed by disassembling `FabricBlockStateModel.class`'s default method with
+`javap -c`, not assumed from the similarity to bug #2): this time the mixin is an *interface*
+mixin (`@Mixin(BlockStateModel.class) interface BlockStateModelMixin extends
+FabricBlockStateModel {}`), not a per-implementation one, and `emitQuads(...)`'s default body is
+a real implementation - it casts `this` back to `BlockStateModel`, calls
+`collectParts(randomSource)`, and pushes each resulting `BlockModelPart` through the emitter via
+`FabricBlockModelPart`'s own (also real) default `emitQuads`. There is no `isVanillaAdapter()`-
+style flag and no silent no-op stub anymore. **Practical effect: an unconditional
+`((FabricBlockStateModel) backdropModel).emitQuads(...)` call is correct here** - no
+`isRealFabricModel`-style guard is needed on 1.21.5, and adding one back (out of habit, or by
+copying bug #2's fix forward) would be a no-op at best. `AptOresBakedModel` casts directly for
+exactly this reason. See `docs/PORTING.md` §5 for the general lesson this teaches about not
+assuming a past "always-true instanceof" caveat still means the same thing after a rewrite.
 
 ### 3. Forge needed `architectury-loom` bumped to `1.17-SNAPSHOT` (and Gradle to 9.5.0) just to launch
 `:forge:runClient` crashed on startup with `1.11-SNAPSHOT` (the version `fabric`/`neoforge` still
@@ -259,7 +301,7 @@ this distinction; `developmentNeoForge.extendsFrom common` alone is fine there.
 ./gradlew build
 ```
 
-Requires JDK 21. Targets Minecraft 1.21.1 (Fabric + NeoForge, via Architectury Loom).
+Requires JDK 21. Targets Minecraft 1.21.5 (Fabric + NeoForge + Forge, via Architectury Loom).
 
 ```
 ./gradlew :fabric:runClient

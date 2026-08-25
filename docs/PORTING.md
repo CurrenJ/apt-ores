@@ -140,6 +140,41 @@ port:
   item id) would surface the model in `BakingResult.itemStackModels()` where it could be
   unwrapped back to a `BakedModel`.
 
+In the 1.21.4→1.21.5 port, the pattern repeated in a new shape - this time as *silent* API
+divergence rather than a missing hook:
+
+- Vanilla's whole block-rendering model type changed from `BakedModel`
+  (`net.minecraft.client.resources.model`) to `BlockStateModel` + `BlockModelPart`
+  (`net.minecraft.client.renderer.block.model`) - on **all three loaders**, including Fabric this
+  time (previously Fabric's own `FabricBakedModel` layer insulated it from some of this kind of
+  churn; not this time, since the vanilla type it wraps changed).
+- Fabric's entire model-loading and rendering API (fabric-model-loading-api-v1,
+  fabric-renderer-api-v1) was rewritten to match: `Context.addModels(List)` /
+  `Context.modifyModelAfterBake()` became a typed `Context.addModel(ExtraModelKey<T>,
+  UnbakedExtraModel<T>)` / `Context.modifyBlockModelAfterBake()` pair (conceptually converging
+  with NeoForge's `StandaloneModelKey`/`ModifyBakingResult`, see below), and
+  `FabricBakedModel`/`isVanillaAdapter()` became `FabricBlockStateModel`/`FabricBlockModelPart`
+  (mixed onto `BlockStateModel`/`BlockModelPart` themselves via an *interface* mixin this time,
+  not a per-implementation one - see `docs/DEVELOPMENT.md`'s updated "Fabric gotcha" section for
+  why that actually removes the old `isVanillaAdapter()` trap instead of reintroducing it).
+- NeoForge grew a typed `StandaloneModelKey`/`ModelEvent.RegisterStandalone` facility, a nicer
+  typed replacement for its own already-working `ModelResourceLocation.standalone()` +
+  `RegisterAdditional` from the 1.21.4 port - NeoForge keeps investing in this extension point.
+- Regular Forge **still has no standalone-model registration facility at all** (same real gap as
+  1.21.4, confirmed again by decompiling the real 55.1.0 jar) - the throwaway-item-model-JSON
+  workaround from the 1.21.4 port carried forward essentially unchanged, just adapted to recover
+  quads from the new `BlockModelWrapper` shape (a private `quads` field with no public accessor,
+  reached via a narrow reflective field read - see `docs/DEVELOPMENT.md`).
+- **NeoForge and Forge quietly diverged from each other on two unrelated details of the same
+  rework**, despite both having just gone through "the same" `BakedModel`→`BlockStateModel`
+  change: NeoForge's patched `BakedQuad` names its extra boolean accessor
+  `hasAmbientOcclusion()`, Forge's names it `ambientOcclusion()`; NeoForge's `SimpleModelWrapper`
+  gained a 4-arg constructor overload taking a trailing `RenderType`, Forge's stayed at vanilla's
+  plain 3-arg one. Both compile fine in isolation and fail only with a real javac error on the
+  other loader's spelling/arity - exactly the trap this section warns about. Confirmed via
+  `javap -p` on both loaders' real jars side by side, not assumed from one and copied to the
+  other.
+
 **Lesson: verify each loader's relevant API independently. Do not port NeoForge's fix to Forge
 (or vice versa) without re-checking that the same classes/methods still exist there.** If one
 loader's public API for something this mod needs has genuinely disappeared, look for:
@@ -177,6 +212,15 @@ class of change to look for even if the exact API differs again next time:
   rewrites so far.
 - **Loader-specific event/hook removal** (see §4). This is the one category that isn't just
   "update a call site" - budget real design time if it recurs.
+- **A previous port's documented "always true, but that's a bug" `instanceof` check can flip to
+  "always true, and that's fine" after a rewrite - don't assume the old caveat still applies.**
+  The 1.21.4-era Fabric gotcha (`instanceof FabricBakedModel` always true because it was mixed
+  onto every `BakedModel` with a no-op default) looked structurally identical after the 1.21.5
+  rewrite (`instanceof FabricBlockStateModel` is *still* always true, now mixed onto every
+  `BlockStateModel`) - but this time the default implementation does real work (delegates to
+  `collectParts` and encodes the result), not a stub. Re-verify the actual default method body
+  (`javap -c`, or read the mixin's target) each time instead of assuming a past caveat about "an
+  always-true instanceof check" still holds the same way.
 
 ## 6. After it compiles
 
