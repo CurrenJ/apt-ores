@@ -15,16 +15,15 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ModelEvent;
-import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * No blocks, items, or block entities are registered anywhere in this project, and nothing runs
- * on a dedicated server - this class is restricted to {@link Dist#CLIENT} so Forge never loads it
- * server-side. Ore rendering is achieved purely by post-processing the vanilla model bake result -
+ * on a dedicated server - {@link #init()} is only called on {@link Dist#CLIENT} (see below), so
+ * none of this ever loads server-side. Ore rendering is achieved purely by post-processing the
+ * vanilla model bake result -
  * swapping each target ore's baked model for a composite that samples its neighbors live - the
  * same technique connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  *
@@ -49,11 +48,22 @@ import java.util.Map;
  * {@link BlockState} object (default {@code Object} identity, since {@code BlockState} doesn't
  * override {@code equals}/{@code hashCode}), which is what lets {@link #onModifyBakingResult} key
  * {@link #OVERLAY_STATES} off it safely below.
+ *
+ * <p>1.21.9's event bus overhaul (eventbus 7.0-beta) stopped every {@link ModelEvent} member from
+ * implementing {@code IModBusEvent}; each now has its own static {@code EventBus<T>} instead.
+ * {@code @Mod.EventBusSubscriber} only handles {@code IModBusEvent}s, so both listeners below are
+ * registered explicitly via {@link #init()}, called from {@link grill24.aptores.forge.AptOresForge}
+ * on the client only (this class is not itself {@link Dist#CLIENT}-restricted the way NeoForge's
+ * equivalent is).
  */
-@Mod.EventBusSubscriber(modid = AptOres.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class AptOresForgeClient {
     /** The synthetic per-type block state whose baked model is our pinned overlay geometry. */
     private static final Map<OreTypeDefinition, BlockState> OVERLAY_STATES = new HashMap<>();
+
+    public static void init() {
+        ModelEvent.RegisterModelStateDefinitions.BUS.addListener(AptOresForgeClient::onRegisterModelStateDefinitions);
+        ModelEvent.ModifyBakingResult.BUS.addListener(AptOresForgeClient::onModifyBakingResult);
+    }
 
     /** The throwaway block id shadowing {@code type.overlayModelId()} (see class javadoc). */
     private static ResourceLocation overlayBlockId(OreTypeDefinition type) {
@@ -67,8 +77,7 @@ public class AptOresForgeClient {
             .create(Block::defaultBlockState, BlockState::new);
     }
 
-    @SubscribeEvent
-    public static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
+    private static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
         OVERLAY_STATES.clear();
 
@@ -79,8 +88,7 @@ public class AptOresForgeClient {
         }
     }
 
-    @SubscribeEvent
-    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+    private static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
         Map<BlockState, BlockStateModel> models = event.getResults().blockStateModels();
 
         for (Map.Entry<BlockState, BlockStateModel> entry : models.entrySet()) {

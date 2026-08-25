@@ -1,17 +1,22 @@
 package grill24.aptores.forge;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.forge.client.AptOresForgeClient;
+import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 
 /**
  * Mod entry point required by Forge. All rendering logic lives in
- * {@link grill24.aptores.forge.client.AptOresForgeClient}, which Forge only loads on the client -
- * unlike NeoForge, Forge's {@code @Mod} annotation has no {@code dist} restriction, so the
- * client-only event handlers are kept in a separate {@code @Mod.EventBusSubscriber(value =
- * Dist.CLIENT)} class instead of here.
+ * {@link grill24.aptores.forge.client.AptOresForgeClient}; unlike NeoForge, Forge's {@code @Mod}
+ * annotation has no {@code dist} restriction, so this constructor explicitly checks
+ * {@link FMLEnvironment#dist} before touching any client-only class.
  */
 @Mod(AptOres.MOD_ID)
 public class AptOresForge {
     public AptOresForge() {
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            AptOresForgeClient.init();
+        }
     }
 }
