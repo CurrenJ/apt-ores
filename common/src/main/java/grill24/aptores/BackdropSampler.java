@@ -43,7 +43,17 @@ public final class BackdropSampler {
         return counts.entrySet().stream()
             .max(Map.Entry.comparingByValue())
             .map(Map.Entry::getKey)
-            .orElse(DEFAULT_BACKDROP);
+            .orElseGet(() -> defaultBackdropFor(level.getBlockState(origin)));
+    }
+
+    /**
+     * With no eligible neighbor, fall back to whichever of stone/deepslate matches the ore's own
+     * variant rather than always stone - a deepslate ore surrounded only by non-solid or
+     * ore-family blocks should still read as deepslate.
+     */
+    private static BlockState defaultBackdropFor(BlockState oreState) {
+        Identifier oreId = BuiltInRegistries.BLOCK.getKey(oreState.getBlock());
+        return oreId.getPath().contains("deepslate") ? Blocks.DEEPSLATE.defaultBlockState() : DEFAULT_BACKDROP;
     }
 
     private static boolean isValidBackdrop(BlockGetter level, BlockPos pos, BlockState state) {
