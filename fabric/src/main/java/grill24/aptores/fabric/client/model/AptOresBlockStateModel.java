@@ -44,7 +44,7 @@ public class AptOresBlockStateModel extends WrapperBlockStateModel {
     @Override
     public void emitQuads(QuadEmitter emitter, BlockAndTintGetter blockView, BlockPos pos,
                           BlockState state, RandomSource random, Predicate<Direction> cullTest) {
-        BlockState backdrop = BackdropSampler.sample(blockView, pos);
+        BlockState backdrop = BackdropSampler.sample(blockView, pos, state);
 
         // Backdrop: delegate straight to the sampled neighbor block's own model. Every
         // BlockStateModel has FabricBlockStateModel mixed in at runtime, so this works for both

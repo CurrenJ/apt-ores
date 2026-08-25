@@ -1,4 +1,7 @@
 {
-  "blocks": ["minecraft:emerald_ore", "minecraft:deepslate_emerald_ore"],
+  "blocks": [
+    "minecraft:emerald_ore",
+    { "block": "minecraft:deepslate_emerald_ore", "default_backdrop": "minecraft:deepslate" }
+  ],
   "overlay_texture": "aptores:block/overlay/emerald_ore_overlay"
 }

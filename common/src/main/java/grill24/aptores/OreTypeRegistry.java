@@ -1,6 +1,9 @@
 package grill24.aptores;
 
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -16,6 +19,8 @@ public final class OreTypeRegistry {
     private static List<OreTypeDefinition> all = List.of();
     private static Map<Identifier, OreTypeDefinition> byBlockId = Map.of();
     private static Map<Identifier, OreTypeDefinition> byBlockModelId = Map.of();
+    /** Resolved once per reload so the render fallback path stays a plain map lookup. */
+    private static Map<Block, BlockState> defaultBackdropByOreBlock = Map.of();
 
     private OreTypeRegistry() {
     }
@@ -40,6 +45,7 @@ public final class OreTypeRegistry {
         all = List.copyOf(definitions);
         byBlockId = Map.copyOf(newByBlockId);
         byBlockModelId = Map.copyOf(newByBlockModelId);
+        defaultBackdropByOreBlock = resolveDefaultBackdrops(definitions);
 
         AptOres.LOGGER.info("Apt Ores: loaded {} ore type(s)", all.size());
     }
@@ -58,5 +64,35 @@ public final class OreTypeRegistry {
 
     public static boolean isAdaptedOreBlockId(Identifier blockId) {
         return blockId != null && byBlockId.containsKey(blockId);
+    }
+
+    /**
+     * The backdrop this ore block falls back to when none of its neighbors qualifies, or
+     * {@code null} if it declares none (callers then use {@link BackdropSampler#DEFAULT_BACKDROP}).
+     */
+    public static BlockState defaultBackdropFor(BlockState oreState) {
+        return defaultBackdropByOreBlock.get(oreState.getBlock());
+    }
+
+    private static Map<Block, BlockState> resolveDefaultBackdrops(List<OreTypeDefinition> definitions) {
+        // Reload runs during model baking, long after the block registry is frozen, so the ids can
+        // be resolved to real blocks once here instead of on every mesh rebuild.
+        Map<Block, BlockState> resolved = new HashMap<>();
+
+        for (OreTypeDefinition definition : definitions) {
+            for (Map.Entry<Identifier, Identifier> entry : definition.defaultBackdrops().entrySet()) {
+                Block oreBlock = BuiltInRegistries.BLOCK.getOptional(entry.getKey()).orElse(null);
+                Block backdropBlock = BuiltInRegistries.BLOCK.getOptional(entry.getValue()).orElse(null);
+                if (oreBlock == null || backdropBlock == null) {
+                    // Not an error: ore types can ship for mods that aren't installed.
+                    AptOres.LOGGER.debug("Apt Ores: ore type {} declares default backdrop {} -> {}; not present, ignoring",
+                        definition.name(), entry.getKey(), entry.getValue());
+                    continue;
+                }
+                resolved.put(oreBlock, backdropBlock.defaultBlockState());
+            }
+        }
+
+        return Map.copyOf(resolved);
     }
 }

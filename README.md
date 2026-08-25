@@ -15,12 +15,19 @@ make your mod or resource/data pack's ore blend into its surroundings, add a JSO
 
 ```json
 {
-  "blocks": ["yourmod:ruby_ore", "yourmod:deepslate_ruby_ore"],
+  "blocks": [
+    "yourmod:ruby_ore",
+    { "block": "yourmod:deepslate_ruby_ore", "default_backdrop": "minecraft:deepslate" }
+  ],
   "overlay_texture": "yourmod:block/overlay/ruby_ore_overlay"
 }
 ```
 
-- `blocks` — every block id this entry covers (normal + deepslate variant, etc).
+- `blocks` — every block id this entry covers (normal + deepslate variant, etc). An entry is
+  either a bare block id, or an object that also names that block's `default_backdrop` — the
+  material it wears when *nothing* around it qualifies (it's exposed to air on all sides, say).
+  Without one it falls back to plain stone, so give the deepslate variants
+  `"minecraft:deepslate"`, nether ores `"minecraft:netherrack"`, and so on.
 - `overlay_texture` — a cutout texture (transparent background, only the ore flecks opaque) drawn
   on top of the sampled backdrop.
 - `overlay_model` (optional) — defaults to `<your_namespace>:block/overlay_<file name>`; only set

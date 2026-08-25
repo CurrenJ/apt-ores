@@ -69,11 +69,16 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   JSON file plus one overlay texture - no Java/code changes, no PR to this repo needed. Schema:
   ```json
   {
-    "blocks": ["othermod:copper2_ore", "othermod:deepslate_copper2_ore"],
+    "blocks": [
+      "othermod:copper2_ore",
+      { "block": "othermod:deepslate_copper2_ore", "default_backdrop": "minecraft:deepslate" }
+    ],
     "overlay_texture": "othermod:block/overlay/copper2_ore_overlay",
     "overlay_model": "othermod:block/overlay_copper2_ore"
   }
   ```
+  A `blocks` entry is either a bare block id or an object naming that block's `default_backdrop`
+  (the fallback `BackdropSampler` uses when no neighbor qualifies - stone if unset).
   `overlay_model` is optional and defaults to `<namespace>:block/overlay_<filename>` (matching the
   convention the 8 built-in ores use). Deliberately *not* a `SimpleJsonResourceReloadListener`:
   since this mod is purely a client rendering effect, definitions only need to be fresh by the
@@ -82,14 +87,16 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   ordering to get right.
 - **`OreTypeRegistry`** - static holder rebuilt by `OreTypeRegistry.reload(...)` at the top of each
   loader's model-baking hook (see below); exposes `all()`, `byBlockId(...)`, `byBlockModelId(...)`,
-  `isAdaptedOreBlockId(...)`. This is the single source of truth for "which things does this mod
+  `isAdaptedOreBlockId(...)`, `defaultBackdropFor(...)`. This is the single source of truth for "which things does this mod
   touch" at any given moment, and it's what `BackdropSampler` and both loaders' baking hooks read.
 
-- **`BackdropSampler`** - `sample(BlockGetter level, BlockPos origin)` looks at the six face
-  neighbors of `origin`, keeps the ones that are opaque, non-ore blocks, and returns the
-  highest-weighted one (weight 4 for anything that isn't plain stone/deepslate, weight 1 for
-  stone/deepslate, so one deliberately-placed special block beats the stone the ore usually sits
-  in). Falls back to `Blocks.STONE.defaultBlockState()` if nothing qualifies. This is called
+- **`BackdropSampler`** - `sample(BlockGetter level, BlockPos origin, BlockState oreState)` looks
+  at the six face neighbors of `origin`, keeps the ones that are opaque, non-ore blocks, and
+  returns the highest-weighted one (weight 4 for anything that isn't plain stone/deepslate,
+  weight 1 for stone/deepslate, so one deliberately-placed special block beats the stone the ore
+  usually sits in). If nothing qualifies it falls back to the `default_backdrop` `oreState`'s
+  block declares in its ore-type JSON (deepslate for the deepslate variants), else
+  `Blocks.STONE.defaultBlockState()`. This is called
   fresh on every render-relevant call - nothing is cached or stored.
 
 ### `fabric`

@@ -48,7 +48,7 @@ public class AptOresModel extends DelegateBlockStateModel implements DynamicBloc
         // Backdrop: sample the neighbor block's own model and emit its parts first. Delegate to
         // the position-aware path when the neighbor is itself dynamic (e.g. another adapted ore),
         // otherwise fall back to the position-independent collect.
-        BlockState backdrop = BackdropSampler.sample(level, pos);
+        BlockState backdrop = BackdropSampler.sample(level, pos, state);
         BlockStateModel backdropModel = Minecraft.getInstance().getModelManager().getBlockStateModelSet().get(backdrop);
         if (backdropModel != null) {
             if (backdropModel instanceof DynamicBlockStateModel dynamic) {

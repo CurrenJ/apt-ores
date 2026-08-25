@@ -18,6 +18,10 @@ import java.util.Map;
  * how connected-texture mods (e.g. Continuity) pick a texture variant from neighbor state at
  * mesh time, and it means the visual result is always in sync: break/place a neighbor block and
  * the ore's appearance updates the same tick, the same way glass-pane connections do.
+ *
+ * <p>When nothing around the ore qualifies (it's floating in air, or every neighbor is itself an
+ * adapted ore), the ore falls back to the host material its ore-type JSON declares for that block
+ * id - so a deepslate variant reads as deepslate instead of taking the plain-stone default.
  */
 public final class BackdropSampler {
     public static final BlockState DEFAULT_BACKDROP = Blocks.STONE.defaultBlockState();
@@ -25,7 +29,7 @@ public final class BackdropSampler {
     private BackdropSampler() {
     }
 
-    public static BlockState sample(BlockGetter level, BlockPos origin) {
+    public static BlockState sample(BlockGetter level, BlockPos origin, BlockState oreState) {
         Map<BlockState, Integer> counts = new HashMap<>();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
@@ -43,7 +47,16 @@ public final class BackdropSampler {
         return counts.entrySet().stream()
             .max(Map.Entry.comparingByValue())
             .map(Map.Entry::getKey)
-            .orElse(DEFAULT_BACKDROP);
+            .orElseGet(() -> defaultBackdrop(oreState));
+    }
+
+    /**
+     * The backdrop an ore wears when no neighbor qualifies: whatever its ore-type JSON declares
+     * for that specific block id, else plain stone.
+     */
+    public static BlockState defaultBackdrop(BlockState oreState) {
+        BlockState declared = OreTypeRegistry.defaultBackdropFor(oreState);
+        return declared != null ? declared : DEFAULT_BACKDROP;
     }
 
     private static boolean isValidBackdrop(BlockGetter level, BlockPos pos, BlockState state) {

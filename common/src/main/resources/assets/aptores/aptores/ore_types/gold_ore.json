@@ -1,4 +1,7 @@
 {
-  "blocks": ["minecraft:gold_ore", "minecraft:deepslate_gold_ore"],
+  "blocks": [
+    "minecraft:gold_ore",
+    { "block": "minecraft:deepslate_gold_ore", "default_backdrop": "minecraft:deepslate" }
+  ],
   "overlay_texture": "aptores:block/overlay/gold_ore_overlay"
 }

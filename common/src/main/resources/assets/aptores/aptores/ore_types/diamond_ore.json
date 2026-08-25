@@ -1,4 +1,7 @@
 {
-  "blocks": ["minecraft:diamond_ore", "minecraft:deepslate_diamond_ore"],
+  "blocks": [
+    "minecraft:diamond_ore",
+    { "block": "minecraft:deepslate_diamond_ore", "default_backdrop": "minecraft:deepslate" }
+  ],
   "overlay_texture": "aptores:block/overlay/diamond_ore_overlay"
 }
