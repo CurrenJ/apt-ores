@@ -40,6 +40,7 @@ import java.util.function.Supplier;
 public class AptOresBakedModel implements BakedModel, FabricBakedModel {
     private static final float OVERLAY_OFFSET = 0.0025f;
     private static final RenderMaterial OVERLAY_MATERIAL = createOverlayMaterial();
+    private static final RenderMaterial DEFAULT_MATERIAL = createDefaultMaterial();
 
     private final OreTypeDefinition oreType;
     private final BakedModel vanillaOreModel;
@@ -58,6 +59,19 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
             .blendMode(BlendMode.TRANSLUCENT)
             .disableDiffuse(true)
             .find();
+    }
+
+    /**
+     * Indigo's {@code QuadEmitter.fromVanilla} NPEs if handed a {@code null} material (it doesn't
+     * fall back to a standard one), so every quad we forward - including the plain backdrop
+     * geometry - needs an explicit material.
+     */
+    private static RenderMaterial createDefaultMaterial() {
+        var renderer = Renderer.get();
+        if (renderer == null) {
+            return null;
+        }
+        return renderer.materialFinder().find();
     }
 
     private BakedModel getOverlayModel() {
@@ -79,7 +93,7 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
         if (isRealFabricModel(backdropModel)) {
             ((FabricBakedModel) backdropModel).emitBlockQuads(emitter, blockView, backdrop, pos, randomSupplier, cullTest);
         } else {
-            emitVanillaQuads(emitter, backdropModel, backdrop, random, null);
+            emitVanillaQuads(emitter, backdropModel, backdrop, random, DEFAULT_MATERIAL);
         }
 
         BakedModel overlayModel = getOverlayModel();
@@ -101,7 +115,7 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
         if (isRealFabricModel(backdropModel)) {
             ((FabricBakedModel) backdropModel).emitItemQuads(emitter, randomSupplier);
         } else if (backdropModel != null) {
-            emitVanillaQuads(emitter, backdropModel, defaultBackdrop, random, null);
+            emitVanillaQuads(emitter, backdropModel, defaultBackdrop, random, DEFAULT_MATERIAL);
         }
 
         BakedModel overlayModel = getOverlayModel();
