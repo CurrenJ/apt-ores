@@ -1,9 +1,10 @@
 package grill24.aptores.neoforge.client.model;
 
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.Direction;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Vector3f;
+import org.joml.Vector3fc;
 
 /** Vertex-manipulation helper for compositing baked quads from two independently-baked models. */
 public final class QuadHelper {
@@ -12,39 +13,26 @@ public final class QuadHelper {
 
     /**
      * Offsets a quad slightly outward along its face normal so the overlay layer doesn't
-     * z-fight with the backdrop layer directly beneath it.
+     * z-fight with the backdrop layer directly beneath it. Rebuilds the quad with translated
+     * vertex positions, preserving the packed UVs, material info, and NeoForge baked normals/
+     * colors verbatim.
      */
     public static BakedQuad offsetQuad(BakedQuad quad, @Nullable Direction side, float offset) {
-        Direction direction = side != null ? side : quad.getDirection();
+        Direction direction = side != null ? side : quad.direction();
 
-        int[] originalVertices = quad.getVertices();
-        int[] newVertices = originalVertices.clone();
+        float offsetX = direction.getStepX() * offset;
+        float offsetY = direction.getStepY() * offset;
+        float offsetZ = direction.getStepZ() * offset;
 
-        float offsetX = 0, offsetY = 0, offsetZ = 0;
-        if (direction != null) {
-            offsetX = direction.getStepX() * offset;
-            offsetY = direction.getStepY() * offset;
-            offsetZ = direction.getStepZ() * offset;
+        Vector3f[] positions = new Vector3f[4];
+        for (int i = 0; i < 4; i++) {
+            Vector3fc p = quad.position(i);
+            positions[i] = new Vector3f(p.x() + offsetX, p.y() + offsetY, p.z() + offsetZ);
         }
 
-        int vertexSize = DefaultVertexFormat.BLOCK.getVertexSize() / 4;
-
-        for (int vertex = 0; vertex < 4; vertex++) {
-            int baseIndex = vertex * vertexSize;
-
-            float x = Float.intBitsToFloat(newVertices[baseIndex]);
-            float y = Float.intBitsToFloat(newVertices[baseIndex + 1]);
-            float z = Float.intBitsToFloat(newVertices[baseIndex + 2]);
-
-            x += offsetX;
-            y += offsetY;
-            z += offsetZ;
-
-            newVertices[baseIndex] = Float.floatToRawIntBits(x);
-            newVertices[baseIndex + 1] = Float.floatToRawIntBits(y);
-            newVertices[baseIndex + 2] = Float.floatToRawIntBits(z);
-        }
-
-        return new BakedQuad(newVertices, quad.getTintIndex(), quad.getDirection(), quad.getSprite(), quad.isShade(), quad.getLightEmission());
+        return new BakedQuad(
+            positions[0], positions[1], positions[2], positions[3],
+            quad.packedUV0(), quad.packedUV1(), quad.packedUV2(), quad.packedUV3(),
+            direction, quad.materialInfo(), quad.bakedNormals(), quad.bakedColors());
     }
 }

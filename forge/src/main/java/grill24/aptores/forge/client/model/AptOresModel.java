@@ -2,150 +2,123 @@ package grill24.aptores.forge.client.model;
 
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
+import grill24.aptores.forge.client.OverlayModelRegistry;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.RenderType;
-import net.minecraft.client.renderer.block.model.BakedQuad;
-import net.minecraft.client.renderer.block.model.ItemTransforms;
-import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.client.renderer.block.BlockAndTintGetter;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.client.resources.model.sprite.Material;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.client.ChunkRenderTypeSet;
 import net.minecraftforge.client.model.data.ModelData;
 import net.minecraftforge.client.model.data.ModelProperty;
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Purely-visual composite: the backdrop layer is the live-sampled neighbor block's own baked
- * model, the overlay layer is this ore's cutout fragment texture. No world state is written -
- * {@link #getModelData} just samples the six neighbors fresh every mesh rebuild, the same way
- * vanilla already re-triggers a neighborhood remesh for AO/connection-dependent rendering, so
- * this stays in sync automatically when a neighbor is placed or broken.
+ * Purely-visual, stateless composite: renders the neighbor-sampled backdrop block's own baked
+ * block-state model as the base layer, with this ore's cutout overlay on top. No world state is
+ * written - {@link #getModelData} just samples the six neighbors fresh every mesh rebuild, the
+ * same way vanilla already re-triggers a neighborhood remesh for AO/connection-dependent
+ * rendering, so this stays in sync automatically when a neighbor is placed or broken.
  *
- * <p>{@code vanillaOreModel} (the model this instance replaces) is kept only as a source of
- * truth for particle icon and item transforms; its geometry is never emitted.
+ * <p>Forge's mesher dispatches every block through the ModelData-aware {@code collectParts} (the
+ * {@link net.minecraftforge.client.extensions.IForgeBlockStateModel} contract): it calls
+ * {@link #getModelData} first, then feeds the result into {@link #collectParts(RandomSource, List,
+ * ModelData)}. The wrapped {@code vanillaOreModel} (the model this instance replaces) is kept only
+ * as a source of truth for particles, break progress, and the position-independent fallback path;
+ * its geometry is not emitted by default.
  */
-public class AptOresModel implements BakedModel {
+public class AptOresModel implements BlockStateModel {
     public static final ModelProperty<BlockState> BACKDROP_PROPERTY = new ModelProperty<>();
 
     private static final float OVERLAY_OFFSET = 0.001f;
-    private static final ChunkRenderTypeSet OVERLAY_TYPES = ChunkRenderTypeSet.of(RenderType.translucent());
 
     private final OreTypeDefinition oreType;
-    private final BakedModel vanillaOreModel;
-    private final BakedModel overlayModel;
+    private final BlockStateModel vanillaOreModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BakedModel vanillaOreModel, BakedModel overlayModel) {
+    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
-        this.overlayModel = overlayModel;
     }
 
     @Override
-    public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, @NotNull RandomSource rand) {
-        return getQuads(state, side, rand, ModelData.EMPTY, null);
+    public void collectParts(RandomSource random, List<BlockStateModelPart> parts) {
+        // Position-independent fallback (item rendering, particles): plain vanilla ore.
+        vanillaOreModel.collectParts(random, parts);
     }
 
     @Override
-    public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side,
-                                              @NotNull RandomSource rand, @NotNull ModelData modelData,
-                                              @Nullable RenderType renderType) {
-        List<BakedQuad> quads = new ArrayList<>();
-
+    public void collectParts(RandomSource random, List<BlockStateModelPart> parts, ModelData modelData) {
         BlockState backdrop = modelData.get(BACKDROP_PROPERTY);
         if (backdrop == null) {
             backdrop = BackdropSampler.DEFAULT_BACKDROP;
         }
 
-        BakedModel backdropModel = getBackdropModel(backdrop);
+        // Backdrop: emit the sampled neighbor block's own baked model's parts. Its model is
+        // position-independent (a pure function of the block state), so the 2-arg collect is all
+        // we need even though the renderer is position-aware.
+        BlockStateModel backdropModel = Minecraft.getInstance().getModelManager().getBlockStateModelSet().get(backdrop);
         if (backdropModel != null) {
-            boolean shouldRenderBackdrop = renderType == null;
-            if (!shouldRenderBackdrop) {
-                try {
-                    shouldRenderBackdrop = backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY).contains(renderType);
-                } catch (Exception e) {
-                    shouldRenderBackdrop = renderType == RenderType.solid();
-                }
-            }
-            if (shouldRenderBackdrop) {
-                quads.addAll(backdropModel.getQuads(backdrop, side, rand, ModelData.EMPTY, renderType));
-            }
+            backdropModel.collectParts(random, parts);
         }
 
-        if (renderType == null || OVERLAY_TYPES.contains(renderType)) {
-            for (BakedQuad quad : overlayModel.getQuads(state, side, rand, ModelData.EMPTY, renderType)) {
-                quads.add(QuadHelper.offsetQuad(quad, side, OVERLAY_OFFSET));
+        // Overlay: emit this ore's cutout fragments slightly outward along each face so they
+        // don't z-fight with the backdrop layer directly beneath them. The offset is applied at
+        // quad time, leaving the shared baked overlay model untouched.
+        BlockStateModel overlayModel = OverlayModelRegistry.get(oreType);
+        if (overlayModel != null) {
+            List<BlockStateModelPart> overlayParts = new ArrayList<>();
+            overlayModel.collectParts(random, overlayParts);
+            for (BlockStateModelPart part : overlayParts) {
+                parts.add(new OffsetBlockStateModelPart(part, OVERLAY_OFFSET));
             }
         }
-
-        return quads;
-    }
-
-    private BakedModel getBackdropModel(BlockState backdrop) {
-        return Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
     }
 
     @Override
-    public @NotNull ModelData getModelData(@NotNull BlockAndTintGetter level, @NotNull BlockPos pos,
-                                            @NotNull BlockState state, @NotNull ModelData modelData) {
+    public ModelData getModelData(BlockAndTintGetter level, BlockPos pos, BlockState state, ModelData modelData) {
         BlockState backdrop = BackdropSampler.sample(level, pos);
         return modelData.derive().with(BACKDROP_PROPERTY, backdrop).build();
     }
 
     @Override
-    public boolean useAmbientOcclusion() {
-        return true;
+    public Material.Baked particleMaterial() {
+        return vanillaOreModel.particleMaterial();
     }
 
     @Override
-    public boolean isGui3d() {
-        return true;
+    public int materialFlags() {
+        return vanillaOreModel.materialFlags();
     }
 
-    @Override
-    public boolean usesBlockLight() {
-        return true;
-    }
-
-    @Override
-    public TextureAtlasSprite getParticleIcon() {
-        return vanillaOreModel.getParticleIcon();
-    }
-
-    @Override
-    public TextureAtlasSprite getParticleIcon(@NotNull ModelData data) {
-        return vanillaOreModel.getParticleIcon(data);
-    }
-
-    @Override
-    public ChunkRenderTypeSet getRenderTypes(@NotNull BlockState state, @NotNull RandomSource rand, @NotNull ModelData data) {
-        BlockState backdrop = data.get(BACKDROP_PROPERTY);
-        if (backdrop == null) {
-            backdrop = BackdropSampler.DEFAULT_BACKDROP;
+    /** Wraps a baked part so its quads are emitted offset outward along the face normal. */
+    private record OffsetBlockStateModelPart(BlockStateModelPart delegate, float offset) implements BlockStateModelPart {
+        @Override
+        public List<BakedQuad> getQuads(@Nullable Direction direction) {
+            return delegate.getQuads(direction).stream()
+                .map(quad -> QuadHelper.offsetQuad(quad, direction, offset))
+                .toList();
         }
 
-        BakedModel backdropModel = getBackdropModel(backdrop);
-        ChunkRenderTypeSet backdropTypes = ChunkRenderTypeSet.of(RenderType.solid());
-        if (backdropModel != null) {
-            try {
-                backdropTypes = backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY);
-            } catch (Exception ignored) {
-                // Keep the SOLID fallback above.
-            }
+        @Override
+        public boolean useAmbientOcclusion() {
+            return delegate.useAmbientOcclusion();
         }
 
-        return ChunkRenderTypeSet.union(backdropTypes, OVERLAY_TYPES);
-    }
+        @Override
+        public Material.Baked particleMaterial() {
+            return delegate.particleMaterial();
+        }
 
-    @Override
-    public ItemTransforms getTransforms() {
-        return vanillaOreModel.getTransforms();
+        @Override
+        public int materialFlags() {
+            return delegate.materialFlags();
+        }
     }
 }
