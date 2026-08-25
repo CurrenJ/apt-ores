@@ -41,6 +41,17 @@ version/presence handshake is needed.
 
 ## Architecture
 
+> **Staleness warning (26.2 port):** the per-loader subsections below were written for the
+> 1.21.4 port and their API specifics are now out of date. The 26.1 port (carried forward
+> unchanged into 26.2 - see `docs/PORTING.md` §8-9) was a full rendering rewrite:
+> `BakedModel` was split into `BlockModel`/`ItemModel`/`BlockStateModel`, `ModelData`/
+> `ModelProperty` was removed from NeoForge (but kept on Forge), and each loader now dispatches
+> per-position neighbor sampling through a *different* hook (`FabricBlockStateModel.emitQuads` /
+> NeoForge's 5-arg `collectParts` / Forge's `getModelData` + 3-arg `collectParts`).
+> `docs/PORTING.md` §8 has the authoritative mechanism for each loader; the loader source under
+> `{fabric,neoforge,forge}/src/main/java/grill24/aptores/{loader}/client/` is the ground truth.
+> The `common` subsection (ore-types JSON, registry, sampler) is still accurate.
+
 ### `common`
 Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegistry`, and
 `BackdropSampler` use nothing but vanilla Minecraft classes, no Fabric/NeoForge APIs.
@@ -259,15 +270,23 @@ this distinction; `developmentNeoForge.extendsFrom common` alone is fine there.
 ./gradlew build
 ```
 
-Requires JDK 21. Targets Minecraft 1.21.1 (Fabric + NeoForge, via Architectury Loom).
+Requires JDK 25 (Loom toolchain, `options.release = 25`). Targets Minecraft 26.2 (Fabric +
+NeoForge + Forge, via Architectury Loom). MC 26.1+ ships unobfuscated, so the project uses the
+`loom-no-remap` variant (`dev.architectury.loom-no-remap` 1.17.491, Gradle 9.5.1) and there is no
+mappings file to download or pin. Pin references: fabric_loader 0.19.3, Fabric API
+0.158.0+26.2, NeoForge 26.2.0.67, Forge 65.1.0 (no `architectury:architectury` dependency any
+more - see `docs/PORTING.md` §9).
 
 ```
 ./gradlew :fabric:runClient
 ./gradlew :neoforge:runClient
+./gradlew :forge:runClient
 ```
 
-both launch a dev client with the mod active; both loaders have been manually verified to render
-correctly (backdrop + overlay compositing) as of this writing.
+all launch a dev client with the mod active. `./gradlew clean build` passes for all three
+loaders, but visual confirmation in-game (backdrop + overlay compositing) is still pending as of
+this writing - the port compiles clean but hasn't yet been run and eyeballed the way the 1.21.4
+port was.
 
 ## Deliberately not done / known limitations
 
@@ -296,3 +315,27 @@ correctly (backdrop + overlay compositing) as of this writing.
   one of the 16 target ore block models, whichever model-loading hook runs last during that
   reload wins outright (no attempt to detect or merge). Same class of limitation Continuity and
   other CTM mods have with each other.
+
+## Prior-version port learnings (carried forward)
+
+### From 1.21.5 — Fabric `instanceof FabricBlockStateModel` is always true, but this time it's not a bug
+After the 1.21.5 Fabric Renderer API rewrite, `instanceof FabricBlockStateModel` is *still*
+always true (the interface is mixed onto every `BlockStateModel`), but the default `emitQuads` now
+does real work (an *interface* mixin that delegates to `collectParts`) instead of being a no-op
+stub. There is no `isVanillaAdapter()` flag, so an unconditional
+`((FabricBlockStateModel) backdrop).emitQuads(...)` is correct — do not port bug #2's
+`isVanillaAdapter()` guard forward. (See `docs/PORTING.md` §5.)
+
+### From 1.21.9 — item/inventory rendering of adapted ores is not intercepted (regression)
+Since 1.21.9, item models bake separately from block-state models, so the composite model classes
+never see held/inventory ore items — they show the plain vanilla texture. The "Item/inventory
+rendering always uses a stone backdrop" limitation below is stale (pre-1.21.9).
+
+### From 1.21.11 — `Identifier` rename, Forge `SimpleModelWrapper` shape, typed event bus
+- `ResourceLocation` → `Identifier` (`net.minecraft.resources.Identifier`, same API) — a
+  mechanical, codebase-wide rename.
+- Forge's `SimpleModelWrapper` carries `layer`/`layerFast` (5 record components) vs NeoForge's/
+  vanilla's single `renderType` — the two loaders' "rebuild a wrapper" helpers cannot share an
+  implementation (see also `docs/PORTING.md` §8's `BakedQuad` ctor note).
+- Forge's event bus became typed `EventBus<T>`/`BUS` fields; `@SubscribeEvent` moved to
+  `net.minecraftforge.eventbus.api.listener.SubscribeEvent`.

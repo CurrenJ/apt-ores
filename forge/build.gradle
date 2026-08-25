@@ -39,7 +39,8 @@ repositories {
 dependencies {
     forge "net.minecraftforge:forge:$rootProject.minecraft_version-$rootProject.forge_version"
 
-    common(project(path: ':common', configuration: 'namedElements')) { transitive = false }
+    // namedElements no longer exists in loom-no-remap; reference common directly.
+    common(project(path: ':common')) { transitive = false }
     shadowBundle project(path: ':common', configuration: 'transformProductionForge')
 }
 
@@ -63,13 +64,41 @@ processResources {
     }
 }
 
-shadowJar {
-    configurations = [project.configurations.shadowBundle]
-    archiveClassifier = 'dev-shadow'
+// loom-no-remap: remapJar is gone. Mark the default jar as raw so shadowJar can build on
+// top of the Loom-processed output, then make shadowJar (which bundles :common via
+// shadowBundle) the primary artifact.
+jar {
+    archiveClassifier = 'raw'
 }
 
-remapJar {
-    inputFile.set shadowJar.archiveFile
+shadowJar {
+    dependsOn(jar)
+    mainSpec.sourcePaths.clear()           // don't re-include source set output directly
+    from(zipTree(jar.archiveFile))         // unpack the Loom-processed jar as the base
+    configurations = [project.configurations.shadowBundle]
+    archiveClassifier = null               // shadowJar becomes the primary artifact
+}
+
+// Redirect components.java to publish the shadow jar instead of the plain jar.
+configurations {
+    apiElements {
+        outgoing.artifacts.clear()
+        outgoing.artifact(shadowJar)
+    }
+    runtimeElements {
+        outgoing.artifacts.clear()
+        outgoing.artifact(shadowJar)
+    }
+}
+
+// Forge dev runtime: keep the mod on a SINGLE classpath entry. With classes and resources as
+// two separate dirs, Forge's SecureModuleFinder unions them into a `union:` URL; ClasspathLocator
+// can't turn that into a valid module name (empty name) and FML dies at bootstrap. Merging the
+// resources output into the classes dir means :forge:runClient sees one entry per module.
+sourceSets {
+    main {
+        output.resourcesDir = output.classesDirs.singleFile
+    }
 }
 
 sourceSets.main.resources.srcDir("src/main/generated")
@@ -83,4 +112,30 @@ loom {
                         "--output", file("src/main/generated").absolutePath
         }
     }
+}
+
+// FML's runtime AXFORM wires its name-handler to modlauncher's "srg" mapping provider, which in
+// loom-no-remap is ArchitecturyNamingService. That service requires the
+// architectury.naming.mappingsPath/sourceNamespace system properties; without them it throws
+// ("Missing required system property...") for every AT line, crashing :forge:runClient at FML
+// bootstrap (Invalid access transformer line / Invalid AccessTransformer config). Since the dev
+// runtime is unobfuscated (official names), the correct mapping is identity: feed it a valid but
+// EMPTY official->named mapping file so it loads empty tables and translates nothing.
+def emptyMappings = layout.buildDirectory.file('generated/empty-official-to-named.tiny')
+
+tasks.register('generateEmptyMappings') {
+    def out = emptyMappings.get().asFile
+    outputs.file(out)
+    doLast {
+        out.parentFile.mkdirs()
+        out.text = "v1\tofficial\tnamed\n"
+    }
+}
+
+tasks.named('runClient', JavaExec) {
+    dependsOn('generateEmptyMappings')
+    jvmArgs(
+        '-Darchitectury.naming.sourceNamespace=official',
+        "-Darchitectury.naming.mappingsPath=${emptyMappings.get().asFile.absolutePath}"
+    )
 }

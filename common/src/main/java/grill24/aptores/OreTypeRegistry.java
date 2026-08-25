@@ -1,6 +1,6 @@
 package grill24.aptores;
 
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -14,25 +14,25 @@ import java.util.Map;
  */
 public final class OreTypeRegistry {
     private static List<OreTypeDefinition> all = List.of();
-    private static Map<ResourceLocation, OreTypeDefinition> byBlockId = Map.of();
-    private static Map<ResourceLocation, OreTypeDefinition> byBlockModelId = Map.of();
+    private static Map<Identifier, OreTypeDefinition> byBlockId = Map.of();
+    private static Map<Identifier, OreTypeDefinition> byBlockModelId = Map.of();
 
     private OreTypeRegistry() {
     }
 
     public static void reload(List<OreTypeDefinition> definitions) {
-        Map<ResourceLocation, OreTypeDefinition> newByBlockId = new HashMap<>();
-        Map<ResourceLocation, OreTypeDefinition> newByBlockModelId = new HashMap<>();
+        Map<Identifier, OreTypeDefinition> newByBlockId = new HashMap<>();
+        Map<Identifier, OreTypeDefinition> newByBlockModelId = new HashMap<>();
 
         for (OreTypeDefinition definition : definitions) {
-            for (ResourceLocation blockId : definition.blockIds()) {
+            for (Identifier blockId : definition.blockIds()) {
                 OreTypeDefinition existing = newByBlockId.putIfAbsent(blockId, definition);
                 if (existing != null) {
                     AptOres.LOGGER.warn("Apt Ores: ore type {} claims block {} already claimed by {}; keeping {}",
                         definition.name(), blockId, existing.name(), existing.name());
                 }
             }
-            for (ResourceLocation blockModelId : definition.blockModelIds()) {
+            for (Identifier blockModelId : definition.blockModelIds()) {
                 newByBlockModelId.putIfAbsent(blockModelId, definition);
             }
         }
@@ -48,15 +48,15 @@ public final class OreTypeRegistry {
         return all;
     }
 
-    public static OreTypeDefinition byBlockId(ResourceLocation blockId) {
+    public static OreTypeDefinition byBlockId(Identifier blockId) {
         return blockId == null ? null : byBlockId.get(blockId);
     }
 
-    public static OreTypeDefinition byBlockModelId(ResourceLocation modelId) {
+    public static OreTypeDefinition byBlockModelId(Identifier modelId) {
         return modelId == null ? null : byBlockModelId.get(modelId);
     }
 
-    public static boolean isAdaptedOreBlockId(ResourceLocation blockId) {
+    public static boolean isAdaptedOreBlockId(Identifier blockId) {
         return blockId != null && byBlockId.containsKey(blockId);
     }
 }

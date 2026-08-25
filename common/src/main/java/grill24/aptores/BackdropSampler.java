@@ -3,7 +3,7 @@ package grill24.aptores;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -58,7 +58,7 @@ public final class BackdropSampler {
         if (!state.isCollisionShapeFullBlock(level, pos)) {
             return false;
         }
-        ResourceLocation blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        Identifier blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
         // Don't let one ore's backdrop be "another ore" - that would render nonsensically since
         // the neighbor is itself being intercepted and rendered as a composite.
         return !OreTypeRegistry.isAdaptedOreBlockId(blockId);
