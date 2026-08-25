@@ -6,11 +6,11 @@ import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.fabric.client.model.AptOresBakedModel;
 import net.fabricmc.fabric.api.client.model.loading.v1.ModelLoadingPlugin;
+import net.fabricmc.fabric.api.client.model.loading.v1.SimpleUnbakedExtraModel;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
-
-import java.util.ArrayList;
-import java.util.List;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Wraps the vanilla baked models for every ore block Apt Ores knows about, purely at the
@@ -30,28 +30,19 @@ public final class AptOresModelLoadingPlugin {
 
             // Pin our overlay-only models so they get loaded, baked, and stitched into the
             // block atlas even though no blockstate or item references them directly.
-            List<ResourceLocation> overlayModelIds = new ArrayList<>();
             for (OreTypeDefinition type : OreTypeRegistry.all()) {
-                overlayModelIds.add(type.overlayModelId());
+                context.addModel(OverlayModelRegistry.keyFor(type), SimpleUnbakedExtraModel.blockStateModel(type.overlayModelId()));
             }
-            context.addModels(overlayModelIds);
 
-            context.modifyModelAfterBake().register((model, ctx) -> {
-                ResourceLocation resourceId = ctx.id();
-
-                for (OreTypeDefinition type : OreTypeRegistry.all()) {
-                    if (type.overlayModelId().equals(resourceId)) {
-                        OverlayModelRegistry.put(type, model);
-                        return model;
-                    }
+            context.modifyBlockModelAfterBake().register((model, ctx) -> {
+                BlockState state = ctx.state();
+                ResourceLocation blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+                OreTypeDefinition oreType = OreTypeRegistry.byBlockId(blockId);
+                if (oreType == null) {
+                    return model;
                 }
 
-                OreTypeDefinition oreType = OreTypeRegistry.byBlockModelId(resourceId);
-                if (oreType != null) {
-                    return new AptOresBakedModel(oreType, model);
-                }
-
-                return model;
+                return new AptOresBakedModel(oreType, model);
             });
 
             AptOres.LOGGER.info("Apt Ores: hooked model baking for {} ore types", OreTypeRegistry.all().size());

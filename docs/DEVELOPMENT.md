@@ -103,46 +103,64 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   top. **See the "Fabric FabricBakedModel gotcha" section below before touching this file** -
   the composition logic looks simple but has one very unintuitive trap that cost real debugging
   time.
-- **`OverlayModelRegistry`** - a tiny static `Map<OreTypeDefinition, BakedModel>`, reset and
-  repopulated on every resource reload by the plugin above. Exists because Fabric's
-  `modifyModelAfterBake` fires per-model as baking proceeds rather than handing back one batch
-  map (unlike NeoForge's `ModifyBakingResult`, see below) - by the time anything actually
-  renders, every bake in the reload has finished, so a lazy lookup here is always safe regardless
-  of bake order.
-- **`QuadHelper.offsetQuad`** - only used by the `getQuads(...)` fallback (see below), nudges a
-  quad along its face normal to prevent z-fighting between backdrop and overlay.
+- **`OverlayModelRegistry`** - owns an `ExtraModelKey<BlockStateModel>` per ore type (Fabric
+  1.21.6's replacement for pinning a standalone model - see `context.addModel(key,
+  SimpleUnbakedExtraModel.blockStateModel(...))` in the plugin above) and resolves the baked
+  `BlockStateModel` for that key lazily, via `FabricBakedModelManager`, once baking finishes. All
+  bakes complete before any rendering happens, so a lazy lookup here is always safe regardless of
+  registration order.
+- As of 1.21.6, `AptOresBakedModel` implements `BlockStateModel`/`FabricBlockStateModel` (not
+  `BakedModel`/`FabricBakedModel`) and composites via `emitter.pushTransform(...)` (an FRAPI
+  `QuadTransform` that offsets vertices and forces `ChunkSectionLayer.TRANSLUCENT`) instead of a
+  standalone `QuadHelper.offsetQuad` helper - Fabric's own `QuadHelper.java` was deleted in this
+  port since nothing needs manual `BakedQuad` vertex surgery anymore.
 
 ### `neoforge`
-- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterAdditional`
+- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterStandalone`
   first calls `OreTypeRegistry.reload(OreTypeLoader.load(...))` (same as Fabric), then pins the
-  overlay models (same purpose as Fabric's `addModels`), using
-  `ModelResourceLocation.standalone(...)` since these aren't tied to any blockstate/item.
-  `ModelEvent.ModifyBakingResult` then gets the *whole* bake result as one mutable
-  `Map<ModelResourceLocation, BakedModel>` - for every entry whose block id matches an
-  `OreTypeDefinition`, it looks up that type's already-baked overlay model from the *same* map and
-  replaces the entry's value with a new `AptOresModel` wrapping both. Much simpler than Fabric's
-  per-model-callback + registry approach, since NeoForge hands you the complete map in one shot.
-- **`AptOresModel`** - NeoForge's `IDynamicBakedModel` equivalent of the Fabric composite.
-  Because `getQuads(...)` on this loader doesn't receive a `BlockAndTintGetter`/`BlockPos`
-  directly, the backdrop is sampled in `getModelData(level, pos, state, modelData)` (which *does*
-  get position) and stashed in a `ModelProperty<BlockState>`; `getQuads` then reads it back out
-  of `ModelData`. `getRenderTypes` unions the backdrop's own render types with
-  `RenderType.translucent()` so both layers actually get built into the chunk mesh.
+  overlay models via a `StandaloneModelKey<BlockStateModel>` per ore type (NeoForge 1.21.6's
+  replacement for the old `ModelResourceLocation.standalone(...)` pinning). `ModelEvent.
+  ModifyBakingResult` then gets the *whole* bake result as `BakingResult.blockStateModels()`, now
+  keyed by `BlockState` directly rather than `ModelResourceLocation` - for every entry whose
+  block id matches an `OreTypeDefinition`, it looks up that type's already-baked overlay model
+  from `bakingResult.standaloneModels()` (keyed by the `StandaloneModelKey`, not by
+  `ResourceLocation`) and replaces the entry's value with a new `AptOresModel` wrapping both.
+- **`AptOresModel`** - implements `DynamicBlockStateModel`, whose `collectParts(level, pos,
+  state, random, parts)` receives the world/position directly (no more `ModelData`/
+  `ModelProperty` indirection), so the backdrop is sampled inline on every call. The overlay's
+  baked parts are wrapped in a private `OverlayPart` (a `BlockModelPart` decorator) that offsets
+  each quad via `QuadHelper.offsetQuad` and forces `ChunkSectionLayer.TRANSLUCENT`.
 
 ### `forge`
-- Same design as `neoforge` - Forge exposes the identical `ModelEvent.RegisterAdditional` /
-  `ModelEvent.ModifyBakingResult` pair (NeoForge inherited them from Forge at the fork, just under
-  `net.neoforged.*` instead of `net.minecraftforge.*`) - but Forge's `@Mod` annotation has no
-  `dist` parameter, so the mod is split into two classes instead of NeoForge's one:
+- Regular (non-Neo) Forge 1.21.6 has diverged further from NeoForge than in previous ports: it
+  has **no** `ModelEvent.RegisterAdditional`/`RegisterStandalone` equivalent at all (confirmed by
+  decompiling the real `forge-1.21.6-56.0.8` jar - see `docs/PORTING.md` §4/§5), and the 1.21.4-era
+  workaround of shadowing each overlay with a throwaway per-item model JSON no longer works either,
+  since `BlockModelWrapper` now stores its baked quads in a private field with no public accessor.
+  Instead, `AptOresForgeClient` uses `ModelEvent.RegisterModelStateDefinitions` (new in 1.21.6): a
+  plain, never-registered `Block` instance is created purely to get a `StateDefinition`/
+  `BlockState` pair, registered under a synthetic id that has a matching
+  `assets/aptores/blockstates/overlay_*.json`, so the overlay model gets discovered and baked
+  through the normal blockstate pipeline and shows up in `ModifyBakingResult`'s
+  `blockStateModels()` map keyed by that synthetic `BlockState` - same map `ModifyBakingResult`
+  then walks to find and wrap each real ore's entry, same as NeoForge. Forge's `@Mod` annotation
+  has no `dist` parameter, so the mod is split into two classes instead of NeoForge's one:
   - **`AptOresForge`** - the required `@Mod(MOD_ID)` entry point. Loader-neutral, does nothing,
     exists only because Forge requires exactly one `@Mod`-annotated class per mod id.
-  - **`AptOresForgeClient`** - everything else (identical logic to `AptOresNeoForgeClient`), gated
-    with `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
-    Forge never loads this class - and therefore never resolves its client-only imports like
-    `BakedModel`/`Minecraft` - on a dedicated server.
-- **`AptOresModel`** / **`QuadHelper`** - byte-for-byte the same approach as `neoforge`'s, just
-  against `net.minecraftforge.client.model.data.*` / `net.minecraftforge.client.ChunkRenderTypeSet`
-  instead of the `net.neoforged.neoforge.*` equivalents.
+  - **`AptOresForgeClient`** - everything else, gated with `@Mod.EventBusSubscriber(bus =
+    Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so Forge never loads this class - and
+    therefore never resolves its client-only imports - on a dedicated server.
+- **`AptOresModel`** - implements `BlockStateModel`, using Forge's own `IForgeBlockStateModel`
+  mixin-in extension (still `ModelData`/`ModelProperty`-based, unlike NeoForge's
+  `DynamicBlockStateModel`): `getModelData(level, pos, state, modelData)` samples the backdrop and
+  stashes it in a `ModelProperty<BlockState>`; the `collectParts(random, dest, ModelData,
+  ChunkSectionLayer)` overload reads it back out. Third-party ore types added purely via an
+  `ore_types` JSON (see `OreTypeLoader`) do not get their overlay baked on this loader unless they
+  also ship a matching blockstate JSON - a pre-existing limitation carried over from the 1.21.4-era
+  item-JSON workaround.
+- **Note**: `forge_version` is pinned to `56.0.8`, not the newer `56.0.9` - the `56.0.9` build
+  produces a corrupted merged Minecraft+Forge jar that fails `:forge:compileJava` with dozens of
+  spurious `cannot find symbol` errors, unrelated to this mod's code. See `docs/PORTING.md` §8.2.
 
 ### Assets (`common/src/main/resources/assets/aptores/`)
 - `aptores/ore_types/<type>.json` - the `OreTypeLoader` definitions for the 8 built-in ores (see
@@ -259,15 +277,15 @@ this distinction; `developmentNeoForge.extendsFrom common` alone is fine there.
 ./gradlew build
 ```
 
-Requires JDK 21. Targets Minecraft 1.21.1 (Fabric + NeoForge, via Architectury Loom).
+Requires JDK 21. Targets Minecraft 1.21.6 (Fabric, NeoForge, and Forge, via Architectury Loom).
 
 ```
 ./gradlew :fabric:runClient
 ./gradlew :neoforge:runClient
+./gradlew :forge:runClient
 ```
 
-both launch a dev client with the mod active; both loaders have been manually verified to render
-correctly (backdrop + overlay compositing) as of this writing.
+each launches a dev client with the mod active.
 
 ## Deliberately not done / known limitations
 
@@ -296,3 +314,16 @@ correctly (backdrop + overlay compositing) as of this writing.
   one of the 16 target ore block models, whichever model-loading hook runs last during that
   reload wins outright (no attempt to detect or merge). Same class of limitation Continuity and
   other CTM mods have with each other.
+
+## Prior-version port learnings (carried forward)
+
+### From 1.21.5 — Fabric `instanceof FabricBlockStateModel` is always true, but this time it's not a bug
+After the 1.21.5 Fabric Renderer API rewrite (`FabricBakedModel` → `FabricBlockStateModel` +
+`FabricBlockModelPart`), the `instanceof` check is *still* always true — `fabric-renderer-api-v1`
+mixes `FabricBlockStateModel` onto every `BlockStateModel` — but this time the default `emitQuads`
+does real work (an *interface* mixin whose default casts back to `BlockStateModel` and delegates
+to `collectParts`) rather than being a silent no-op stub. There is no `isVanillaAdapter()` flag
+anymore, so an unconditional `((FabricBlockStateModel) backdrop).emitQuads(...)` is correct.
+**Do not port bug #2's `isVanillaAdapter()` guard forward to 1.21.5+** — it's a no-op at best.
+See `docs/PORTING.md` §5 for the general lesson about not assuming a past "always-true
+`instanceof`" caveat still means the same thing after a rewrite.

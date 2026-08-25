@@ -3,29 +3,22 @@ package grill24.aptores.fabric.client.model;
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.fabric.client.OverlayModelRegistry;
-import net.fabricmc.fabric.api.renderer.v1.Renderer;
-import net.fabricmc.fabric.api.renderer.v1.material.BlendMode;
-import net.fabricmc.fabric.api.renderer.v1.material.RenderMaterial;
 import net.fabricmc.fabric.api.renderer.v1.mesh.QuadEmitter;
-import net.fabricmc.fabric.api.renderer.v1.model.FabricBakedModel;
+import net.fabricmc.fabric.api.renderer.v1.model.FabricBlockStateModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.block.model.BakedQuad;
-import net.minecraft.client.renderer.block.model.ItemTransforms;
+import net.minecraft.client.renderer.block.model.BlockModelPart;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 
 /**
  * Purely-visual, stateless composite: renders the neighbor-sampled backdrop block's own baked
@@ -33,150 +26,79 @@ import java.util.function.Supplier;
  * read beyond a live lookup of the six neighboring block states every time this block is
  * (re)meshed - the same technique connected-texture mods use to pick a texture from neighbors.
  *
- * <p>The wrapped {@code vanillaOreModel} is kept only as a source of truth for particle icon and
- * item transforms (so break particles and inventory rendering still look correct); its geometry
- * is never emitted.
+ * <p>The wrapped {@code vanillaOreModel} is kept only as a source of truth for the particle icon
+ * (so break particles still look correct); its geometry is never emitted. Item/inventory
+ * rendering for these blocks is unaffected by this class - as of 1.21.6 it's baked completely
+ * separately (see {@code BlockModelWrapper}/{@code ItemModel}), so the composite look is only
+ * visible in-world.
  */
-public class AptOresBakedModel implements BakedModel, FabricBakedModel {
+public class AptOresBakedModel implements BlockStateModel, FabricBlockStateModel {
     private static final float OVERLAY_OFFSET = 0.0025f;
-    private static final RenderMaterial OVERLAY_MATERIAL = createOverlayMaterial();
+
+    private static final net.fabricmc.fabric.api.renderer.v1.mesh.QuadTransform OVERLAY_TRANSFORM = quad -> {
+        Direction direction = quad.lightFace();
+        float dx = direction.getStepX() * OVERLAY_OFFSET;
+        float dy = direction.getStepY() * OVERLAY_OFFSET;
+        float dz = direction.getStepZ() * OVERLAY_OFFSET;
+        for (int vertex = 0; vertex < 4; vertex++) {
+            quad.pos(vertex, quad.x(vertex) + dx, quad.y(vertex) + dy, quad.z(vertex) + dz);
+        }
+        quad.renderLayer(ChunkSectionLayer.TRANSLUCENT);
+        return true;
+    };
 
     private final OreTypeDefinition oreType;
-    private final BakedModel vanillaOreModel;
+    private final BlockStateModel vanillaOreModel;
 
-    public AptOresBakedModel(OreTypeDefinition oreType, BakedModel vanillaOreModel) {
+    public AptOresBakedModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
     }
 
-    private static RenderMaterial createOverlayMaterial() {
-        var renderer = Renderer.get();
-        if (renderer == null) {
-            return null;
-        }
-        return renderer.materialFinder()
-            .blendMode(BlendMode.TRANSLUCENT)
-            .disableDiffuse(true)
-            .find();
-    }
-
-    private BakedModel getOverlayModel() {
+    private BlockStateModel getOverlayModel() {
         return OverlayModelRegistry.get(oreType);
     }
 
     @Override
-    public boolean isVanillaAdapter() {
-        return false;
-    }
-
-    @Override
-    public void emitBlockQuads(QuadEmitter emitter, BlockAndTintGetter blockView, BlockState state, BlockPos pos,
-                                Supplier<RandomSource> randomSupplier, Predicate<@Nullable Direction> cullTest) {
+    public void emitQuads(QuadEmitter emitter, BlockAndTintGetter blockView, BlockPos pos, BlockState state,
+                           RandomSource random, Predicate<@Nullable Direction> cullTest) {
         BlockState backdrop = BackdropSampler.sample(blockView, pos);
-        RandomSource random = randomSupplier.get();
 
-        BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
-        if (isRealFabricModel(backdropModel)) {
-            ((FabricBakedModel) backdropModel).emitBlockQuads(emitter, blockView, backdrop, pos, randomSupplier, cullTest);
-        } else {
-            emitVanillaQuads(emitter, backdropModel, backdrop, random, null);
-        }
+        BlockStateModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
+        ((FabricBlockStateModel) backdropModel).emitQuads(emitter, blockView, pos, backdrop, random, cullTest);
 
-        BakedModel overlayModel = getOverlayModel();
-        if (overlayModel != null && OVERLAY_MATERIAL != null) {
-            if (isRealFabricModel(overlayModel)) {
-                ((FabricBakedModel) overlayModel).emitBlockQuads(emitter, blockView, state, pos, randomSupplier, cullTest);
-            } else {
-                emitVanillaQuads(emitter, overlayModel, state, random, OVERLAY_MATERIAL);
-            }
-        }
-    }
-
-    @Override
-    public void emitItemQuads(QuadEmitter emitter, Supplier<RandomSource> randomSupplier) {
-        // No neighbors to sample for an item in a hand/GUI - fall back to a plain stone backdrop.
-        BlockState defaultBackdrop = Blocks.STONE.defaultBlockState();
-        RandomSource random = randomSupplier.get();
-        BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(defaultBackdrop);
-        if (isRealFabricModel(backdropModel)) {
-            ((FabricBakedModel) backdropModel).emitItemQuads(emitter, randomSupplier);
-        } else if (backdropModel != null) {
-            emitVanillaQuads(emitter, backdropModel, defaultBackdrop, random, null);
-        }
-
-        BakedModel overlayModel = getOverlayModel();
-        if (isRealFabricModel(overlayModel)) {
-            ((FabricBakedModel) overlayModel).emitItemQuads(emitter, randomSupplier);
-        } else if (overlayModel != null) {
-            emitVanillaQuads(emitter, overlayModel, defaultBackdrop, random, OVERLAY_MATERIAL);
-        }
-    }
-
-    /**
-     * Fabric's renderer API mixes {@link FabricBakedModel} onto every {@link BakedModel} (with
-     * {@code isVanillaAdapter()} defaulting to {@code true} and a no-op default
-     * {@code emitBlockQuads}), so a plain {@code instanceof FabricBakedModel} check is always
-     * true and would silently drop every quad for a plain vanilla model like stone. Only delegate
-     * to {@code emitBlockQuads}/{@code emitItemQuads} for models that genuinely opted in.
-     */
-    private static boolean isRealFabricModel(@Nullable BakedModel model) {
-        return model instanceof FabricBakedModel fabricModel && !fabricModel.isVanillaAdapter();
-    }
-
-    private void emitVanillaQuads(QuadEmitter emitter, BakedModel model, BlockState state, RandomSource random,
-                                   @Nullable RenderMaterial material) {
-        for (Direction direction : Direction.values()) {
-            for (BakedQuad quad : model.getQuads(state, direction, random)) {
-                emitter.fromVanilla(quad, material, direction).emit();
-            }
-        }
-        for (BakedQuad quad : model.getQuads(state, null, random)) {
-            emitter.fromVanilla(quad, material, quad.getDirection()).emit();
-        }
-    }
-
-    @Override
-    public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, @NotNull RandomSource rand) {
-        // Fallback path for callers that bypass the Fabric Renderer API (e.g. some item-frame
-        // or GUI previews). Uses a fixed stone backdrop since there's no world/position here.
-        List<BakedQuad> quads = new ArrayList<>();
-        BlockState backdrop = Blocks.STONE.defaultBlockState();
-        BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
-        if (backdropModel != null) {
-            quads.addAll(backdropModel.getQuads(backdrop, side, rand));
-        }
-
-        BakedModel overlayModel = getOverlayModel();
+        BlockStateModel overlayModel = getOverlayModel();
         if (overlayModel != null) {
-            for (BakedQuad quad : overlayModel.getQuads(state, side, rand)) {
-                quads.add(QuadHelper.offsetQuad(quad, side, OVERLAY_OFFSET));
+            emitter.pushTransform(OVERLAY_TRANSFORM);
+            try {
+                ((FabricBlockStateModel) overlayModel).emitQuads(emitter, blockView, pos, state, random, cullTest);
+            } finally {
+                emitter.popTransform();
             }
         }
-        return quads;
     }
 
     @Override
-    public boolean useAmbientOcclusion() {
-        return true;
+    public @Nullable Object createGeometryKey(BlockAndTintGetter blockView, BlockPos pos, BlockState state, RandomSource random) {
+        // Depends on live neighbor state - never cache.
+        return null;
     }
 
     @Override
-    public boolean isGui3d() {
-        return true;
+    public TextureAtlasSprite particleSprite(BlockAndTintGetter blockView, BlockPos pos, BlockState state) {
+        return vanillaOreModel.particleIcon();
     }
 
     @Override
-    public boolean usesBlockLight() {
-        return true;
+    public void collectParts(RandomSource random, List<BlockModelPart> parts) {
+        // Fallback path for callers that bypass the Fabric Renderer API and query this model
+        // with no world/position context. Falls back to the vanilla-model geometry (no neighbor
+        // sampling is possible here).
+        vanillaOreModel.collectParts(random, parts);
     }
 
     @Override
-    public TextureAtlasSprite getParticleIcon() {
-        return vanillaOreModel.getParticleIcon();
-    }
-
-    @Override
-    public ItemTransforms getTransforms() {
-        return vanillaOreModel.getTransforms();
+    public TextureAtlasSprite particleIcon() {
+        return vanillaOreModel.particleIcon();
     }
 }

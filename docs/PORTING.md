@@ -37,7 +37,7 @@ predictable.
 | `fabric_loader_version` | `https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml` (`<release>`) - loader isn't MC-version-pinned, latest stable is normally fine |
 | `fabric_api_version` | Search `"Fabric API" "<version>"`, format is `X.Y.Z+<mc_version>` |
 | `neoforge_version` | `https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge` - filter for the `<mc_minor>.<mc_patch>.*` prefix (e.g. `21.4.*` for 1.21.4), take the highest non-beta |
-| `forge_version` | `https://files.minecraftforge.net/net/minecraftforge/forge/index_<version>.html` - use the "Recommended" build if one is marked, else "Latest" |
+| `forge_version` | `https://files.minecraftforge.net/net/minecraftforge/forge/index_<version>.html` - use the "Recommended" build if one is marked, else "Latest". **Don't trust "Latest" blindly**: on the 1.21.6 port, the newest `56.0.9` build produced a corrupted merged Minecraft+Forge jar (`:forge:compileJava` failing with ~50 nonsensical `cannot find symbol` errors) while the second-newest `56.0.8` build compiled cleanly - see §8.2 |
 
 Also check whether `dev.architectury.loom` / `architectury-plugin` (root `build.gradle`) need a
 version bump for the target MC version - Loom versions aren't always forward-compatible with
@@ -207,3 +207,177 @@ should:
 - Report honestly if dependency resolution fails outright (network/repo access) - that's a
   different, more fundamental blocker than an API break, and worth surfacing immediately rather
   than working around.
+
+## 8. Findings from the 1.21.4 → 1.21.6 port
+
+Fabric and NeoForge ported cleanly (real API rewrite, but no new *category* of problem beyond
+what §5 already predicted). Regular Forge did not - see "Known blocker" below.
+
+### 8.1 The `BlockStateModel`/`DynamicBlockStateModel` rewrite (all three loaders)
+
+1.21.6 replaced `BakedModel` with `BlockStateModel` for block rendering (`BakedModel` still
+exists for items only, via `ItemModel`/`BlockModelWrapper`). Concretely, per loader:
+
+- **Fabric**: `AptOresBakedModel` now implements `BlockStateModel` + `FabricBlockStateModel`
+  (not `BakedModel`/`FabricBakedModel`). `emitBlockQuads`/`emitItemQuads` collapsed into one
+  `emitQuads(emitter, blockView, pos, state, random, cullTest)` - items no longer render through
+  this class at all (see below). Pinning a standalone/extra model changed from
+  `context.addModels(List<ResourceLocation>)` + `context.modifyModelAfterBake()` to
+  `context.addModel(ExtraModelKey, SimpleUnbakedExtraModel.blockStateModel(id))` +
+  `context.modifyBlockModelAfterBake()` (now keyed by `BlockState`, not `ResourceLocation`) - and
+  the baked extra model is retrieved later via `((FabricBakedModelManager)
+  Minecraft.getInstance().getModelManager()).getModel(key)`, not stashed by the bake callback.
+  Compositing quads from another model no longer needs manual `BakedQuad` vertex-offset surgery -
+  FRAPI gained `emitter.pushTransform(QuadTransform)`/`popTransform()`, which is strictly better
+  (works for both vanilla-fallback and FRAPI-native source models uniformly), so
+  `fabric/.../model/QuadHelper.java` was deleted outright, unlike the 1.21.4 port where it was
+  rewritten rather than deleted - **this is now the second port in a row where Fabric's own
+  compositing primitive changed shape; don't assume it'll still be `QuadHelper.offsetQuad` next
+  time either.**
+- **NeoForge**: gained a purpose-built `DynamicBlockStateModel` interface whose `collectParts`
+  takes `BlockAndTintGetter`/`BlockPos` directly - the old `ModelProperty<BlockState>`/
+  `ModelData` indirection (sample backdrop in `getModelData`, read it back in `getQuads`) is gone
+  entirely on this loader. Pinning a standalone model changed from
+  `event.register(ResourceLocation)` (via `ModelEvent.RegisterAdditional`) to a typed
+  `StandaloneModelKey<BlockStateModel>` registered via the renamed `ModelEvent.RegisterStandalone`
+  event, and retrieved from the new `bakingResult.standaloneModels()` map keyed by that key object
+  (not by `ResourceLocation` - a real behavior change, not just a rename).
+- **Regular Forge**: kept the older `ModelData`/`ModelProperty` + `IForgeBlockStateModel` (a
+  mixed-in extension interface on `BlockStateModel`) approach rather than gaining NeoForge's
+  `DynamicBlockStateModel` - **the two forks' `BlockStateModel` extension points have now
+  genuinely diverged**, not just been renamed in parallel. See §8.2 for the bigger Forge-only
+  problem this port surfaced.
+
+Across all three loaders, `BakedQuad` gained a 7th constructor param (`ambientOcclusion`, with
+the old 6-arg constructor kept as an overload) and its accessors are now record-style
+(`quad.direction()`/`quad.vertices()`/`quad.tintIndex()`/`quad.sprite()`/`quad.shade()`/
+`quad.lightEmission()`, not `getDirection()`/`getVertices()`/etc.) - mechanical but easy to miss
+since the old getter names simply don't exist anymore (not deprecated first).
+
+Item/inventory rendering for a swapped block is now **entirely unaffected** by these composite
+model classes on every loader - as of 1.21.6, item models are baked completely separately from
+block-state models (`BlockModelWrapper`/`ItemModel`), so there's no `emitItemQuads`/item-context
+fallback path to maintain at all anymore. This simplified all three loaders' composite classes
+noticeably versus the 1.21.4 versions.
+
+### 8.2 Known blocker: regular Forge 1.21.6 needs a new pin-a-standalone-model technique, AND its compiled jar is corrupted by the current Loom snapshot
+
+**Part A - solved.** Regular (Minecraft)Forge 1.21.6 still has no `RegisterAdditional`/
+`RegisterStandalone`-equivalent event (confirmed by decompiling the real
+`forge-1.21.6-56.0.9-userdev`/sources jar - nothing named `standalone` or `RegisterAdditional`
+anywhere in `net.minecraftforge.client.event.ModelEvent`). Worse, the 1.21.4-era workaround (shadow
+each overlay with a throwaway per-item model JSON, then unwrap `BlockModelWrapper`'s public
+`model` field from `BakingResult.itemStackModels()`) **no longer works either** - decompiling
+`BlockModelWrapper` for 1.21.6 shows its baked quads are now stored in a `private final
+List<BakedQuad> quads` field with no public accessor at all.
+
+The fix used in this port: `ModelEvent.RegisterModelStateDefinitions` - a genuinely new 1.21.6
+event, explicitly documented as being "designed to allow for extra models to be loaded in
+connection with a blockstates json file" for a `StateDefinition` that isn't backed by a real
+registered `Block`. A plain `new Block(BlockBehaviour.Properties.of())` (never registered, never
+placed) is enough to obtain a `StateDefinition`/`BlockState` pair; register it under a synthetic
+id, ship a matching `assets/aptores/blockstates/overlay_*.json` (`{"variants": {"": {"model":
+"aptores:block/overlay_*"}}}`), and the overlay ends up in the normal
+`BakingResult.blockStateModels()` map exactly like a real block, keyed by that synthetic
+`BlockState`. **Caveat**: this only works for overlay models this repo ships a blockstate JSON
+for - a third-party ore type added purely via an `ore_types` JSON (no Java/PR needed on Fabric/
+NeoForge) needs to *also* ship a blockstate JSON to get its overlay baked on regular Forge. This
+is a real, Forge-only gap in the plug-in contract - same class of problem as the 1.21.4-era
+item-JSON workaround had, just moved to a different asset type.
+
+**Part B - unresolved, a genuine tooling bug, not an API-porting problem.** Once the above was
+implemented, `:forge:compileJava` produced ~50 unrelated-looking errors (`cannot find symbol` for
+methods that definitely exist, `package X does not exist` for packages that definitely exist,
+`class X is not public` for classes that are definitely `public`). Decompiling the exact resolved
+dependency jar (per §3's technique) showed why: the actual jar Gradle resolves onto
+`:forge:compileJava`'s classpath (`net.minecraft:forge-1.21.6-56.0.9-minecraft-merged:...`, found
+via `./gradlew :forge:dependencies --configuration compileClasspath`) has **corrupted class
+bytecode** - e.g. `net/minecraft/resources/ResourceLocation.class` in that jar decompiles (via
+`javap`) as `public class ResourceLocation extends net.minecraft.server.Bootstrap` with a field
+named `b` of type `Logger`, and `BakedQuad.class` decompiles as extending
+`ItemPickupParticleGroup<CamelAi>` - nonsense superclass/field assignments, consistent with a
+class-name collision/corruption bug in whatever Architectury Loom's final Forge-jar-merge step
+does for this MC version (an *intermediate* jar in the same Gradle cache,
+`forge-1.21.6-56.0.9-minecraft-merged-mojang`, has structurally sane classes with the right
+fields/superclasses but not-yet-friendly SRG-style method names - so the corruption is
+specifically introduced by the last merge/rename step, not earlier in the pipeline).
+
+This reproduced identically after: fully deleting every `forge-1.21.6-56.0.9-minecraft-merged*`
+cache directory and the `fabric-loom/1.21.6/forge/` working directory and letting Gradle
+regenerate them from scratch (~53s), and after `./gradlew --stop` + a from-cold `--no-daemon`
+run. Both rule out stale-daemon-memory or on-disk-cache corruption as the cause - **this is a
+deterministic bug in Architectury Loom `1.17-SNAPSHOT` (build `1.17.491` at the time of this
+port) merging regular Forge `56.0.9` for MC `1.21.6` specifically**, not something fixable from
+this repo's side. (Both `forge_version` and `neoforge_version` for 1.21.6 are pinned as `-beta`
+releases at the time of this port, and a GitHub code search of `architectury/architectury-loom`
+found zero existing issues/PRs mentioning `1.21.6` at all - consistent with this being a very
+recently exposed, not-yet-reported edge case rather than something with a known workaround.)
+
+**If you hit this again**: don't re-derive it from scratch - check
+`./gradlew :forge:dependencies --configuration compileClasspath` for the exact resolved
+`net.minecraft:...-minecraft-merged:...` artifact, decompile a well-known class from it (anything
+in `net.minecraft.resources` or `net.minecraft.world.level.block` is a fast smoke test), and
+compare against the `-mojang`-suffixed sibling jar in the same
+`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/` directory. If the plain
+`-minecraft-merged` one is structurally garbled and the `-mojang` one isn't, this is the same bug
+- check whether a newer Architectury Loom build has fixed it before spending more time on it.
+`fabric` and `neoforge` were not affected (their equivalent merged jars decompile cleanly), so
+this is Forge-patch-merge-specific, not a general Loom/MC-1.21.6 problem.
+
+**Part B - resolved (follow-up session).** The corruption is **not** an Architectury Loom bug at
+all, and pinning the plugin to the (by-then-released) stable `1.17.491` instead of the floating
+`1.17-SNAPSHOT` made no difference - the merged jar was byte-for-byte the same kind of garbage
+(`ResourceLocation.class` still decompiled as `extends net.minecraft.server.Bootstrap`). The
+actual cause is specific to the **Forge `56.0.9` patch/rename build for MC 1.21.6**: bisecting
+`forge_version` across every available `1.21.6-56.0.x` build on
+`https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml` (`56.0.0` through
+`56.0.9`) showed `56.0.0`, `56.0.5`, and `56.0.8` all merge and compile cleanly, while `56.0.9`
+alone reproduces the corrupted-class symptom every time (confirmed by toggling back and forth
+between `56.0.8`/`56.0.9` twice, deleting the relevant
+`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/forge-1.21.6-56.0.9-minecraft-merged*`
+cache dirs between attempts). A telling clue surfaced during the `56.0.0` build's TinyRemapper
+step, absent from later builds' output: several "Mapping source name conflicts detected" warnings
+where two or more obfuscated classes (`akm`/`akn`/`ako`/`akp`, plus
+`net/minecraftforge/network/ForgePayload`) all map a method literally named `a` with the same
+descriptor to colliding target names (`method_52295`/`method_52296` etc.), auto-"fixed" by
+TinyRemapper picking one arbitrarily. This is consistent with Forge's binary patches for `56.0.9`
+being built against a slightly different anonymous-inner-class enumeration than the vanilla jar
+Loom is patching, so a patch meant for one anonymous class (e.g. some `Bootstrap` inner class)
+gets applied to - and renamed as - a different, wrong target class (here, `ResourceLocation`).
+`56.0.9` was Forge's newest 1.21.6 build at port time but was evidently never actually clean;
+`56.0.8` (the second-newest) has no such issue and is the pin this port shipped with.
+`neoforge_version` was untouched - only regular Forge showed this.
+
+**Takeaway for future ports**: when `forge_version`'s "Latest"/"Recommended" build produces this
+exact corrupted-merged-jar symptom, don't assume it's a Loom/tooling dead end - **bisect
+`forge_version` across nearby builds for the same MC version first**, it's cheap (a `sed` +
+`./gradlew :forge:compileJava` per candidate, no full clean needed) and was the actual fix here.
+
+## Prior-version port history (learnings carried forward)
+
+Each port was done independently from the 1.21.4 base, so this file's own sections above record
+what *this* port observed jumping straight from 1.21.4 to the target, and may describe a change
+that actually first landed in an earlier intermediate version as if it were new. The subsections
+below consolidate each intermediate version's findings, correctly attributed, so no later port
+has to re-derive them.
+
+### From 1.21.5 — `BakedModel` → `BlockStateModel`, and the loaders' first real divergence
+- Vanilla replaced `BakedModel` (`net.minecraft.client.resources.model`) with `BlockStateModel` +
+  `BlockModelPart` (`net.minecraft.client.renderer.block.model`) for block rendering, on **all
+  three loaders** (Fabric's `FabricBakedModel` layer no longer insulated it from this churn).
+- Fabric's model-loading API became typed: `Context.addModel(ExtraModelKey<T>,
+  UnbakedExtraModel<T>)` / `Context.modifyBlockModelAfterBake()`; `FabricBakedModel`/
+  `isVanillaAdapter()` became `FabricBlockStateModel`/`FabricBlockModelPart` (mixed onto the
+  vanilla `BlockStateModel`/`BlockModelPart` interfaces via an *interface* mixin).
+- NeoForge grew a typed `StandaloneModelKey`/`ModelEvent.RegisterStandalone` facility.
+- Regular Forge still has **no** standalone-model registration at all; the 1.21.4 throwaway
+  item-model-JSON workaround carried forward, adapted to recover quads from `BlockModelWrapper`'s
+  now-private `quads` field via a narrow reflective read.
+- **NeoForge and Forge quietly diverged on two details of the same rework**: `BakedQuad`'s extra
+  boolean accessor is `hasAmbientOcclusion()` on NeoForge but `ambientOcclusion()` on Forge;
+  `SimpleModelWrapper` gained a 4-arg ctor (trailing `RenderType`) on NeoForge but stayed 3-arg on
+  Forge. Each compiles in isolation and only fails on the other loader — verify each loader's jar
+  independently (`javap`).
+- §5 lesson: a documented "always-true `instanceof` is a bug" caveat can flip to "always-true and
+  that's fine" after a rewrite — re-verify the actual default-method body (see `DEVELOPMENT.md`
+  bug #2 vs #2a) rather than assuming a past caveat still holds.
