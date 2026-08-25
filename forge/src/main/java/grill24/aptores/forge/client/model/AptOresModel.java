@@ -2,7 +2,6 @@ package grill24.aptores.forge.client.model;
 
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
-import grill24.aptores.forge.client.OverlayModelRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
@@ -41,10 +40,12 @@ public class AptOresModel implements BlockStateModel {
 
     private final OreTypeDefinition oreType;
     private final BlockStateModel vanillaOreModel;
+    private final BlockStateModel overlayModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel) {
+    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel, BlockStateModel overlayModel) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
+        this.overlayModel = overlayModel;
     }
 
     @Override
@@ -71,7 +72,6 @@ public class AptOresModel implements BlockStateModel {
         // Overlay: emit this ore's cutout fragments slightly outward along each face so they
         // don't z-fight with the backdrop layer directly beneath them. The offset is applied at
         // quad time, leaving the shared baked overlay model untouched.
-        BlockStateModel overlayModel = OverlayModelRegistry.get(oreType);
         if (overlayModel != null) {
             List<BlockStateModelPart> overlayParts = new ArrayList<>();
             overlayModel.collectParts(random, overlayParts);

@@ -113,29 +113,3 @@ loom {
         }
     }
 }
-
-// FML's runtime AXFORM wires its name-handler to modlauncher's "srg" mapping provider, which in
-// loom-no-remap is ArchitecturyNamingService. That service requires the
-// architectury.naming.mappingsPath/sourceNamespace system properties; without them it throws
-// ("Missing required system property...") for every AT line, crashing :forge:runClient at FML
-// bootstrap (Invalid access transformer line / Invalid AccessTransformer config). Since the dev
-// runtime is unobfuscated (official names), the correct mapping is identity: feed it a valid but
-// EMPTY official->named mapping file so it loads empty tables and translates nothing.
-def emptyMappings = layout.buildDirectory.file('generated/empty-official-to-named.tiny')
-
-tasks.register('generateEmptyMappings') {
-    def out = emptyMappings.get().asFile
-    outputs.file(out)
-    doLast {
-        out.parentFile.mkdirs()
-        out.text = "v1\tofficial\tnamed\n"
-    }
-}
-
-tasks.named('runClient', JavaExec) {
-    dependsOn('generateEmptyMappings')
-    jvmArgs(
-        '-Darchitectury.naming.sourceNamespace=official',
-        "-Darchitectury.naming.mappingsPath=${emptyMappings.get().asFile.absolutePath}"
-    )
-}

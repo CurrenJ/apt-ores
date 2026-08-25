@@ -5,21 +5,20 @@ import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.forge.client.model.AptOresModel;
-import grill24.aptores.forge.client.model.BakedQuadBlockStateModel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
-import net.minecraft.client.renderer.block.model.BlockStateModelWrapper;
-import net.minecraft.client.renderer.item.CuboidItemModelWrapper;
-import net.minecraft.client.renderer.item.ItemModel;
-import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ModelEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -29,65 +28,64 @@ import java.util.Map;
  * swapping each target ore's baked model for a composite that samples its neighbors live - the
  * same technique connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  *
- * <p>Forge 26.1 has no hook for pinning a model that no blockstate or item references, so each
- * overlay-only model is shadowed by a throwaway client item definition (see
- * {@code assets/aptores/items/overlay_*.json}) - the vanilla per-item model JSON loader indexes
- * those by file path regardless of whether a real item exists with that id, so they show up in
- * {@link ModelBakery.BakingResult#itemStackModels()} without needing any block/item registration.
- * The resulting {@link ItemModel} is a {@link BlockStateModelWrapper} for a "minecraft:model"-typed
- * definition, whose {@code model} field (made public by our access transformer) is the real baked
- * {@link BlockStateModel}.
+ * <p>Each overlay-only (cube_all + cutout ore texture) model is pinned via
+ * {@link ModelEvent.RegisterModelStateDefinitions}: a plain, never-registered {@link Block} is
+ * created purely to obtain a {@link StateDefinition}/{@link BlockState} pair, registered under a
+ * synthetic id backed by a {@code assets/aptores/blockstates/overlay_*.json} file, so the overlay
+ * bakes through the normal blockstate pipeline and shows up in
+ * {@link net.minecraft.client.resources.model.ModelBakery.BakingResult#blockStateModels()} keyed by
+ * that synthetic block's default state.
  */
-// Forge 26.1 moved to per-event buses (eventbus 7): ModelEvent.ModifyBakingResult is no longer an
-// IModBusEvent and carries its own static BUS (created in the DEFAULT group). Registering on the
-// MOD bus is rejected ("BusGroup ... requires IModBusEvent"). Bus.BOTH routes each @SubscribeEvent
-// method automatically - IModBusEvent -> the mod bus group, everything else -> the event's own
-// per-event bus in the DEFAULT group - so this handler lands on ModelEvent.ModifyBakingResult.BUS.
+// Forge 26.1 moved to per-event buses (eventbus 7): ModelEvent.ModifyBakingResult and
+// ModelEvent.RegisterModelStateDefinitions are no longer IModBusEvents and carry their own static
+// BUS (created in the DEFAULT group). Bus.BOTH routes each @SubscribeEvent method automatically -
+// IModBusEvent -> the mod bus group, everything else -> the event's own per-event bus - so both
+// handlers land on their event's own BUS.
 @Mod.EventBusSubscriber(modid = AptOres.MOD_ID, bus = Mod.EventBusSubscriber.Bus.BOTH, value = Dist.CLIENT)
 public class AptOresForgeClient {
+    /** The synthetic per-type block state whose baked model is our pinned overlay geometry. */
+    private static final Map<OreTypeDefinition, BlockState> OVERLAY_STATES = new HashMap<>();
 
-    /** The throwaway item-model id shadowing {@code type.overlayModelId()} (see class javadoc). */
-    private static Identifier overlayItemId(OreTypeDefinition type) {
+    /** The throwaway block id shadowing {@code type.overlayModelId()} (see class javadoc). */
+    private static Identifier overlayBlockId(OreTypeDefinition type) {
         Identifier modelId = type.overlayModelId();
         return Identifier.fromNamespaceAndPath(modelId.getNamespace(), modelId.getPath().replaceFirst("^block/", ""));
     }
 
     @SubscribeEvent
-    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+    public static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
-        OverlayModelRegistry.reset();
+        OVERLAY_STATES.clear();
 
-        // Unwrap the shadowed overlay item models into their baked BlockStateModels before
-        // wrapping anything, so a missing overlay doesn't corrupt the ores that do exist.
-        ModelBakery.BakingResult bakingResult = event.getResults();
-        Map<Identifier, ItemModel> itemModels = bakingResult.itemStackModels();
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            ItemModel overlayItemModel = itemModels.get(overlayItemId(type));
-            BlockStateModel overlayModel = null;
-            if (overlayItemModel instanceof BlockStateModelWrapper wrapper) {
-                overlayModel = wrapper.model;
-            } else if (overlayItemModel instanceof CuboidItemModelWrapper cuboid) {
-                // 26.1 bakes a "minecraft:model" item def pointing at a block model into a cuboid
-                // (pre-baked quad collection) rather than a BlockStateModelWrapper; unwrap the
-                // quads and re-present them as the overlay BlockStateModel.
-                overlayModel = new BakedQuadBlockStateModel(cuboid.quads);
-            }
-            if (overlayModel != null) {
-                OverlayModelRegistry.put(type, overlayModel);
-            } else {
-                AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked as a usable item model (got {}); leaving it untouched",
-                    type.name(), overlayItemModel == null ? "null" : overlayItemModel.getClass().getSimpleName());
-            }
+            Block dummy = new Block(BlockBehaviour.Properties.of());
+            @SuppressWarnings("unchecked")
+            StateDefinition<Block, BlockState> stateDefinition = (StateDefinition<Block, BlockState>) dummy.getStateDefinition();
+            event.register(overlayBlockId(type), stateDefinition);
+            OVERLAY_STATES.put(type, dummy.defaultBlockState());
         }
+    }
 
-        // The baking result's block-state map is mutable; swap each target ore's model for a
-        // composite that samples its neighbors live.
-        Map<BlockState, BlockStateModel> models = bakingResult.blockStateModels();
+    @SubscribeEvent
+    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+        Map<BlockState, BlockStateModel> models = event.getResults().blockStateModels();
+
         for (Map.Entry<BlockState, BlockStateModel> entry : models.entrySet()) {
-            OreTypeDefinition type = OreTypeRegistry.byBlockId(BuiltInRegistries.BLOCK.getKey(entry.getKey().getBlock()));
-            if (type != null) {
-                entry.setValue(new AptOresModel(type, entry.getValue()));
+            BlockState state = entry.getKey();
+            Identifier blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+            OreTypeDefinition type = OreTypeRegistry.byBlockId(blockId);
+            if (type == null) {
+                continue;
             }
+
+            BlockState overlayState = OVERLAY_STATES.get(type);
+            BlockStateModel overlayModel = overlayState == null ? null : models.get(overlayState);
+            if (overlayModel == null) {
+                AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
+                continue;
+            }
+
+            entry.setValue(new AptOresModel(type, entry.getValue(), overlayModel));
         }
     }
 }
