@@ -6,18 +6,22 @@ import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.forge.client.model.AptOresModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.item.BlockModelWrapper;
-import net.minecraft.client.renderer.item.ItemModel;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.client.resources.model.ModelResourceLocation;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ModelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * No blocks, items, or block entities are registered anywhere in this project, and nothing runs
@@ -26,31 +30,55 @@ import java.util.Map;
  * swapping each target ore's baked model for a composite that samples its neighbors live - the
  * same technique connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  *
- * <p>Unlike NeoForge, (Minecraft)Forge 1.21.4 no longer exposes a {@code ModelEvent.RegisterAdditional}
- * hook (or a {@code standaloneModels()} baking-result map) for pinning a model that no blockstate or
- * item references. To still get our overlay-only models loaded and baked, each one is shadowed by a
- * throwaway client item definition (see {@code assets/aptores/items/overlay_*.json}) - the vanilla
- * per-item model JSON loader indexes those by file path regardless of whether a real item exists
- * with that id, so they show up in {@link ModelBakery.BakingResult#itemStackModels()} without needing
- * any block/item registration. The resulting {@link ItemModel} is a plain {@link BlockModelWrapper}
- * for a "minecraft:model"-typed definition, whose public {@code model} field is the real baked model.
+ * <p>Each overlay-only (cube_all + cutout ore texture) model is pinned via
+ * {@link ModelEvent.RegisterModelStateDefinitions}: a plain, never-registered {@link Block} is
+ * created purely to obtain a {@link net.minecraft.world.level.block.state.StateDefinition}/
+ * {@link BlockState} pair, registered under a synthetic id backed by a
+ * {@code assets/aptores/blockstates/overlay_*.json} file, so the overlay bakes through the normal
+ * blockstate pipeline and shows up in {@link ModelBakery.BakingResult#blockStateModels()}.
  */
 @Mod.EventBusSubscriber(modid = AptOres.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class AptOresForgeClient {
+    /** The synthetic per-type block whose baked model is our pinned overlay geometry. */
+    private static final Map<OreTypeDefinition, Block> OVERLAY_BLOCKS = new HashMap<>();
 
-    /** The throwaway item-model id shadowing {@code type.overlayModelId()} (see class javadoc). */
-    private static ResourceLocation overlayItemId(OreTypeDefinition type) {
+    /** The throwaway block id shadowing {@code type.overlayModelId()} (see class javadoc). */
+    private static ResourceLocation overlayBlockStateId(OreTypeDefinition type) {
         ResourceLocation modelId = type.overlayModelId();
         return ResourceLocation.fromNamespaceAndPath(modelId.getNamespace(), modelId.getPath().replaceFirst("^block/", ""));
     }
 
     @SubscribeEvent
-    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+    public static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
+        OVERLAY_BLOCKS.clear();
 
+        for (OreTypeDefinition type : OreTypeRegistry.all()) {
+            Block overlayBlock = new Block(BlockBehaviour.Properties.of());
+            OVERLAY_BLOCKS.put(type, overlayBlock);
+            event.register(overlayBlockStateId(type), overlayBlock.getStateDefinition());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
         ModelBakery.BakingResult bakingResult = event.getResults();
         Map<ModelResourceLocation, BakedModel> models = bakingResult.blockStateModels();
-        Map<ResourceLocation, ItemModel> itemModels = bakingResult.itemStackModels();
+
+        // Index the pinned overlay models by their synthetic block id (the MRL id) so we can look
+        // them up regardless of the exact variant suffix the blockstate loader assigns.
+        Set<ResourceLocation> syntheticIds = new HashSet<>();
+        for (OreTypeDefinition type : OreTypeRegistry.all()) {
+            syntheticIds.add(overlayBlockStateId(type));
+        }
+
+        Map<ResourceLocation, BakedModel> overlayModels = new HashMap<>();
+        for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
+            ResourceLocation id = entry.getKey().id();
+            if (syntheticIds.contains(id)) {
+                overlayModels.put(id, entry.getValue());
+            }
+        }
 
         for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
             ResourceLocation blockId = entry.getKey().id();
@@ -59,8 +87,7 @@ public class AptOresForgeClient {
                 continue;
             }
 
-            ItemModel overlayItemModel = itemModels.get(overlayItemId(type));
-            BakedModel overlayModel = overlayItemModel instanceof BlockModelWrapper wrapper ? wrapper.model : null;
+            BakedModel overlayModel = overlayModels.get(overlayBlockStateId(type));
             if (overlayModel == null) {
                 AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
                 continue;
