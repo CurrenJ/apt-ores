@@ -1,4 +1,7 @@
 {
-  "blocks": ["minecraft:iron_ore", "minecraft:deepslate_iron_ore"],
+  "blocks": [
+    "minecraft:iron_ore",
+    { "block": "minecraft:deepslate_iron_ore", "default_backdrop": "minecraft:deepslate" }
+  ],
   "overlay_texture": "aptores:block/overlay/iron_ore_overlay"
 }

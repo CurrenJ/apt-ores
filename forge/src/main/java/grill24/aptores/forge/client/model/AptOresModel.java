@@ -39,11 +39,13 @@ public class AptOresModel implements BlockStateModel {
     private static final float OVERLAY_OFFSET = 0.001f;
 
     private final OreTypeDefinition oreType;
+    private final BlockState oreState;
     private final BlockStateModel vanillaOreModel;
     private final BlockStateModel overlayModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel, BlockStateModel overlayModel) {
+    public AptOresModel(OreTypeDefinition oreType, BlockState oreState, BlockStateModel vanillaOreModel, BlockStateModel overlayModel) {
         this.oreType = oreType;
+        this.oreState = oreState;
         this.vanillaOreModel = vanillaOreModel;
         this.overlayModel = overlayModel;
     }
@@ -58,7 +60,7 @@ public class AptOresModel implements BlockStateModel {
     public void collectParts(RandomSource random, List<BlockStateModelPart> parts, ModelData modelData) {
         BlockState backdrop = modelData.get(BACKDROP_PROPERTY);
         if (backdrop == null) {
-            backdrop = BackdropSampler.DEFAULT_BACKDROP;
+            backdrop = BackdropSampler.defaultBackdrop(oreState);
         }
 
         // Backdrop: emit the sampled neighbor block's own baked model's parts. Its model is
@@ -83,7 +85,7 @@ public class AptOresModel implements BlockStateModel {
 
     @Override
     public ModelData getModelData(BlockAndTintGetter level, BlockPos pos, BlockState state, ModelData modelData) {
-        BlockState backdrop = BackdropSampler.sample(level, pos);
+        BlockState backdrop = BackdropSampler.sample(level, pos, state);
         return modelData.derive().with(BACKDROP_PROPERTY, backdrop).build();
     }
 

@@ -10,7 +10,7 @@ import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraftforge.api.distmarker.Dist;
@@ -29,12 +29,12 @@ import java.util.Map;
  * same technique connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  *
  * <p>Each overlay-only (cube_all + cutout ore texture) model is pinned via
- * {@link ModelEvent.RegisterModelStateDefinitions}: a plain, never-registered {@link Block} is
- * created purely to obtain a {@link StateDefinition}/{@link BlockState} pair, registered under a
- * synthetic id backed by a {@code assets/aptores/blockstates/overlay_*.json} file, so the overlay
- * bakes through the normal blockstate pipeline and shows up in
+ * {@link ModelEvent.RegisterModelStateDefinitions}: a property-less {@link StateDefinition} is
+ * built purely to obtain a throwaway {@link BlockState}, registered under a synthetic id backed by
+ * an {@code assets/aptores/blockstates/overlay_*.json} file, so the overlay bakes through the
+ * normal blockstate pipeline and shows up in
  * {@link net.minecraft.client.resources.model.ModelBakery.BakingResult#blockStateModels()} keyed by
- * that synthetic block's default state.
+ * that throwaway state.
  */
 // Forge 26.1 moved to per-event buses (eventbus 7): ModelEvent.ModifyBakingResult and
 // ModelEvent.RegisterModelStateDefinitions are no longer IModBusEvents and carry their own static
@@ -58,12 +58,36 @@ public class AptOresForgeClient {
         OVERLAY_STATES.clear();
 
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            Block dummy = new Block(BlockBehaviour.Properties.of());
-            @SuppressWarnings("unchecked")
-            StateDefinition<Block, BlockState> stateDefinition = (StateDefinition<Block, BlockState>) dummy.getStateDefinition();
+            StateDefinition<Block, BlockState> stateDefinition = syntheticStateDefinition();
             event.register(overlayBlockId(type), stateDefinition);
-            OVERLAY_STATES.put(type, dummy.defaultBlockState());
+            OVERLAY_STATES.put(type, stateDefinition.any());
         }
+    }
+
+    /**
+     * A property-less {@link StateDefinition} yielding exactly one throwaway {@link BlockState},
+     * distinct (by identity, which is how baked-model maps are keyed) from every registered
+     * block's states.
+     *
+     * <p>Deliberately not backed by a {@code new Block(...)}: constructing a Block allocates an
+     * intrusive holder in the block registry, and one that never gets registered makes
+     * {@code NamespacedWrapper.freeze} throw ("Some intrusive holders were not registered") the
+     * moment the client builds its registry access. Reusing {@link Blocks#STONE} as the
+     * definition's owner sidesteps that - the owner is only consulted for behaviour flags this
+     * state never exercises, since it exists purely as a baking key.
+     */
+    private static StateDefinition<Block, BlockState> syntheticStateDefinition() {
+        // Self-reference so the definition's properties codec decodes to this definition's own
+        // state rather than to real stone; StateDefinition only calls the function lazily.
+        StateDefinition<Block, BlockState>[] self = newDefinitionRef();
+        self[0] = new StateDefinition.Builder<Block, BlockState>(Blocks.STONE)
+            .create(owner -> self[0].any(), BlockState::new);
+        return self[0];
+    }
+
+    @SuppressWarnings("unchecked")
+    private static StateDefinition<Block, BlockState>[] newDefinitionRef() {
+        return new StateDefinition[1];
     }
 
     @SubscribeEvent
@@ -85,7 +109,7 @@ public class AptOresForgeClient {
                 continue;
             }
 
-            entry.setValue(new AptOresModel(type, entry.getValue(), overlayModel));
+            entry.setValue(new AptOresModel(type, state, entry.getValue(), overlayModel));
         }
     }
 }
