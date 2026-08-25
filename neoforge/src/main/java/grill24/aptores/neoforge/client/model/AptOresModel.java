@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BlockModelPart;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.client.renderer.block.model.SimpleModelWrapper;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.resources.model.QuadCollection;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.RandomSource;
@@ -69,11 +70,15 @@ public class AptOresModel extends DelegateBlockStateModel implements DynamicBloc
         }
     }
 
-    /** Rebuilds a baked part's quad collection offset outward along each face normal. */
+    /** Rebuilds a baked part's quad collection offset outward along each face normal, forcing it
+     * onto the translucent layer regardless of the overlay model's own declared layer (its
+     * {@code cube_all} parent has no explicit render_type, so it would otherwise inherit a
+     * non-translucent default - matching the same fix applied on Forge and the explicit
+     * {@code ChunkSectionLayer.TRANSLUCENT} this replaced on mc/1.21.9's NeoForge port). */
     private static BlockModelPart offset(BlockModelPart part) {
         if (part instanceof SimpleModelWrapper simple) {
             QuadCollection offsetQuads = QuadHelper.offset(simple.quads(), OVERLAY_OFFSET);
-            return new SimpleModelWrapper(offsetQuads, simple.useAmbientOcclusion(), simple.particleIcon(), simple.renderType());
+            return new SimpleModelWrapper(offsetQuads, simple.useAmbientOcclusion(), simple.particleIcon(), ChunkSectionLayer.TRANSLUCENT);
         }
         return part;
     }

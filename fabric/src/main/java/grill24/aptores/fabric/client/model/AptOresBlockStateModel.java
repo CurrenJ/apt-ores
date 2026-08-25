@@ -2,24 +2,21 @@ package grill24.aptores.fabric.client.model;
 
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
-import grill24.aptores.QuadHelper;
 import grill24.aptores.fabric.client.OverlayModelRegistry;
 import net.fabricmc.fabric.api.client.model.loading.v1.wrapper.WrapperBlockStateModel;
+import net.fabricmc.fabric.api.renderer.v1.mesh.MutableQuadView;
 import net.fabricmc.fabric.api.renderer.v1.mesh.QuadEmitter;
 import net.fabricmc.fabric.api.renderer.v1.model.FabricBlockStateModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.block.model.BakedQuad;
-import net.minecraft.client.renderer.block.model.BlockModelPart;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
-import net.minecraft.client.renderer.block.model.SimpleModelWrapper;
-import net.minecraft.client.resources.model.QuadCollection;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.state.BlockState;
+import org.joml.Vector3fc;
 
-import java.util.List;
 import java.util.function.Predicate;
 
 /**
@@ -55,31 +52,31 @@ public class AptOresBlockStateModel extends WrapperBlockStateModel {
         ((FabricBlockStateModel) backdropModel).emitQuads(emitter, blockView, pos, backdrop, random, cullTest);
 
         // Overlay: emit the ore's cutout fragments slightly outward along each face so they don't
-        // z-fight with the backdrop layer directly beneath them.
+        // z-fight with the backdrop layer directly beneath them. Delegated through the emitter's
+        // own transform pipeline (pushTransform/popTransform) rather than manually rebuilding
+        // BakedQuad objects and feeding them in "cold" via fromBakedQuad - the latter doesn't
+        // reliably carry sprite/atlas UV binding the same way the native emitQuads path does,
+        // which was producing badly distorted (stretched/wrong-sprite) overlay textures.
         BlockStateModel overlayModel = OverlayModelRegistry.get(oreType);
         if (overlayModel != null) {
-            List<BlockModelPart> parts = overlayModel.collectParts(random);
-            for (BlockModelPart part : parts) {
-                if (part instanceof SimpleModelWrapper simple) {
-                    emitOffsetQuads(emitter, simple.quads(), cullTest);
-                }
+            emitter.pushTransform(AptOresBlockStateModel::offsetAndMarkTranslucent);
+            try {
+                ((FabricBlockStateModel) overlayModel).emitQuads(emitter, blockView, pos, state, random, cullTest);
+            } finally {
+                emitter.popTransform();
             }
         }
     }
 
-    private static void emitOffsetQuads(QuadEmitter emitter, QuadCollection quads, Predicate<Direction> cullTest) {
-        QuadCollection offset = QuadHelper.offset(quads, OVERLAY_OFFSET);
-
-        for (Direction direction : Direction.values()) {
-            if (cullTest.test(direction)) {
-                continue;
-            }
-            for (BakedQuad quad : offset.getQuads(direction)) {
-                emitter.fromBakedQuad(quad).cullFace(direction).nominalFace(direction).emit();
-            }
+    private static boolean offsetAndMarkTranslucent(MutableQuadView quad) {
+        Vector3fc normal = quad.faceNormal();
+        for (int i = 0; i < 4; i++) {
+            quad.pos(i,
+                quad.x(i) + normal.x() * OVERLAY_OFFSET,
+                quad.y(i) + normal.y() * OVERLAY_OFFSET,
+                quad.z(i) + normal.z() * OVERLAY_OFFSET);
         }
-        for (BakedQuad quad : offset.getQuads(null)) {
-            emitter.fromBakedQuad(quad).emit();
-        }
+        quad.renderLayer(ChunkSectionLayer.TRANSLUCENT);
+        return true;
     }
 }

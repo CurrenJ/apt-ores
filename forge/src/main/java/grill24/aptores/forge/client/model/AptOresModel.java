@@ -54,7 +54,7 @@ public class AptOresModel implements BlockStateModel {
     public void collectParts(RandomSource random, List<BlockModelPart> parts) {
         // Position-independent fallback (particles, inventory context): no ModelData available,
         // so sample nothing and fall back to the default backdrop.
-        collectParts(random, parts, BackdropSampler.DEFAULT_BACKDROP);
+        collectParts(random, parts, BackdropSampler.DEFAULT_BACKDROP, null);
     }
 
     @Override
@@ -67,17 +67,27 @@ public class AptOresModel implements BlockStateModel {
     @Override
     public void collectParts(RandomSource random, List<BlockModelPart> dest, ModelData data, ChunkSectionLayer renderType) {
         BlockState backdrop = data.get(BACKDROP_PROPERTY);
-        collectParts(random, dest, backdrop != null ? backdrop : BackdropSampler.DEFAULT_BACKDROP);
+        collectParts(random, dest, backdrop != null ? backdrop : BackdropSampler.DEFAULT_BACKDROP, renderType);
     }
 
-    private void collectParts(RandomSource random, List<BlockModelPart> dest, BlockState backdrop) {
-        // Backdrop: delegate to the sampled neighbor's own model.
+    private void collectParts(RandomSource random, List<BlockModelPart> dest, BlockState backdrop, ChunkSectionLayer renderType) {
+        // Backdrop: delegate to the sampled neighbor's own model, in the same render layer we
+        // were asked for - collectParts(random, dest) (layer-blind) would otherwise re-add the
+        // backdrop's full geometry on every layer pass, duplicating its solid quads into the
+        // translucent pass too and rendering as a black silhouette on top of the correct layer.
         BlockStateModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
-        backdropModel.collectParts(random, dest, ModelData.EMPTY, null);
+        backdropModel.collectParts(random, dest, ModelData.EMPTY, renderType);
 
         // Overlay: this ore's cutout fragments, offset slightly outward along each face so they
-        // don't z-fight with the backdrop layer directly beneath them.
-        if (overlayModel != null) {
+        // don't z-fight with the backdrop layer directly beneath them. Unlike NeoForge's
+        // DynamicBlockStateModel (one collectParts call per mesh, with each part self-reporting
+        // its own render layer for the compiler to bucket by), Forge's IForgeBlockStateModel
+        // calls this method once per requested layer and expects each call to return only that
+        // layer's content, so the overlay must only be added for the translucent pass (or the
+        // layer-blind/null fallback) - otherwise its half-transparent quads get rasterized into
+        // the solid buffer, which doesn't alpha-test/blend them, rendering as a black silhouette
+        // over the whole face.
+        if (overlayModel != null && (renderType == null || renderType == ChunkSectionLayer.TRANSLUCENT)) {
             List<BlockModelPart> overlayParts = new ArrayList<>();
             overlayModel.collectParts(random, overlayParts);
             for (BlockModelPart part : overlayParts) {
@@ -86,10 +96,14 @@ public class AptOresModel implements BlockStateModel {
         }
     }
 
+    /** Rebuilds a baked part's quad collection offset outward, forcing it onto the translucent
+     * layer regardless of the overlay model's own declared layer (its {@code cube_all} parent has
+     * no explicit render_type, so it would otherwise inherit a non-translucent default). */
     private static BlockModelPart offset(BlockModelPart part) {
         if (part instanceof SimpleModelWrapper simple) {
             QuadCollection offsetQuads = QuadHelper.offset(simple.quads(), OVERLAY_OFFSET);
-            return new SimpleModelWrapper(offsetQuads, simple.useAmbientOcclusion(), simple.particleIcon(), simple.layer(), simple.layerFast());
+            return new SimpleModelWrapper(offsetQuads, simple.useAmbientOcclusion(), simple.particleIcon(),
+                ChunkSectionLayer.TRANSLUCENT, simple.layerFast());
         }
         return part;
     }
@@ -111,13 +125,11 @@ public class AptOresModel implements BlockStateModel {
         BlockStateModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
         Collection<ChunkSectionLayer> layers = new LinkedHashSet<>(backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY));
 
+        // The rebuilt overlay part is always forced onto TRANSLUCENT (see offset()) regardless of
+        // what the overlay model's own parts individually declare, so advertise that directly
+        // rather than inspecting their (possibly different) natural layer.
         if (overlayModel != null) {
-            for (BlockModelPart part : overlayModel.collectParts(rand)) {
-                ChunkSectionLayer layer = part.layer();
-                if (layer != null) {
-                    layers.add(layer);
-                }
-            }
+            layers.add(ChunkSectionLayer.TRANSLUCENT);
         }
 
         return layers;
