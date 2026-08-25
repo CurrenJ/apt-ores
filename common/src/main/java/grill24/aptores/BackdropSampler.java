@@ -52,8 +52,16 @@ public final class BackdropSampler {
      * ore-family blocks should still read as deepslate.
      */
     private static BlockState defaultBackdropFor(BlockState oreState) {
-        ResourceLocation oreId = BuiltInRegistries.BLOCK.getKey(oreState.getBlock());
-        return oreId.getPath().contains("deepslate") ? Blocks.DEEPSLATE.defaultBlockState() : DEFAULT_BACKDROP;
+        return defaultBackdropFor(BuiltInRegistries.BLOCK.getKey(oreState.getBlock()));
+    }
+
+    /**
+     * Same stone/deepslate choice as {@link #defaultBackdropFor(BlockState)}, from a block or
+     * block-model id rather than a live {@link BlockState} - used for the position-less item/GUI
+     * icon, where there's no world or neighbor to sample.
+     */
+    public static BlockState defaultBackdropFor(ResourceLocation oreOrModelId) {
+        return oreOrModelId.getPath().contains("deepslate") ? Blocks.DEEPSLATE.defaultBlockState() : DEFAULT_BACKDROP;
     }
 
     private static boolean isValidBackdrop(BlockGetter level, BlockPos pos, BlockState state) {

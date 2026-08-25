@@ -17,7 +17,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -44,10 +43,16 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
 
     private final OreTypeDefinition oreType;
     private final BakedModel vanillaOreModel;
+    private final BlockState defaultBackdrop;
 
-    public AptOresBakedModel(OreTypeDefinition oreType, BakedModel vanillaOreModel) {
+    /**
+     * @param defaultBackdrop the stone/deepslate backdrop to use when there's no neighbor to
+     *                        sample - i.e. the item/GUI icon (see {@link BackdropSampler#defaultBackdropFor(net.minecraft.resources.ResourceLocation)}).
+     */
+    public AptOresBakedModel(OreTypeDefinition oreType, BakedModel vanillaOreModel, BlockState defaultBackdrop) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
+        this.defaultBackdrop = defaultBackdrop;
     }
 
     private static RenderMaterial createOverlayMaterial() {
@@ -108,8 +113,8 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
 
     @Override
     public void emitItemQuads(QuadEmitter emitter, Supplier<RandomSource> randomSupplier) {
-        // No neighbors to sample for an item in a hand/GUI - fall back to a plain stone backdrop.
-        BlockState defaultBackdrop = Blocks.STONE.defaultBlockState();
+        // No neighbors to sample for an item in a hand/GUI - fall back to this ore's own
+        // stone/deepslate default instead of a live sample.
         RandomSource random = randomSupplier.get();
         BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(defaultBackdrop);
         if (isRealFabricModel(backdropModel)) {
@@ -152,9 +157,10 @@ public class AptOresBakedModel implements BakedModel, FabricBakedModel {
     @Override
     public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, @NotNull RandomSource rand) {
         // Fallback path for callers that bypass the Fabric Renderer API (e.g. some item-frame
-        // or GUI previews). Uses a fixed stone backdrop since there's no world/position here.
+        // or GUI previews). Uses this ore's own stone/deepslate default since there's no
+        // world/position here.
         List<BakedQuad> quads = new ArrayList<>();
-        BlockState backdrop = Blocks.STONE.defaultBlockState();
+        BlockState backdrop = defaultBackdrop;
         BakedModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
         if (backdropModel != null) {
             quads.addAll(backdropModel.getQuads(backdrop, side, rand));
