@@ -173,6 +173,11 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
 
 ## Known non-obvious bugs already fixed here (read before changing rendering code)
 
+> **Forge overlay-pinning (cross-version review):** the overlay models are pinned with
+> `ModelEvent.RegisterModelStateDefinitions` (register a synthetic, never-registered `Block`'s
+> `StateDefinition` under a `blockstates/*.json` id), available since 1.21.4. The item-model-shadow +
+> reflection / access-transformer workaround some ports used is superseded — see `docs/PORTING.md` §4.
+
 ### 1. `neoforge/gradle.properties` must contain `loom.platform = neoforge`
 This is a **per-subproject** properties file (separate from the root `gradle.properties`), and
 nothing in `neoforge/build.gradle` references it - it's easy to not even notice it exists.
