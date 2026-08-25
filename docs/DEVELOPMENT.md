@@ -81,68 +81,96 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   in). Falls back to `Blocks.STONE.defaultBlockState()` if nothing qualifies. This is called
   fresh on every render-relevant call - nothing is cached or stored.
 
+> **1.21.9 model rework.** Minecraft 1.21.9 replaced `BakedModel`/block-context `getQuads(...)`
+> entirely for block-in-world rendering with `BlockStateModel` (one per `BlockState`, exposing
+> `collectParts(...)`/`emitQuads(...)`) and `BlockModelPart` (the actual per-quad geometry unit,
+> exposing `getQuads(Direction)`). Chunk render-layer selection also moved from a per-model
+> `RenderType` set to a per-`BlockModelPart` `ChunkSectionLayer` (via a loader-mixed-in extension
+> method), since a block's overall chunk layer used to be looked up once per `Block` - the
+> per-part override is what lets this mod put a `SOLID` backdrop and a `TRANSLUCENT` overlay in
+> the same block's mesh. See `docs/PORTING.md` §5 for the full breakage history across ports.
+
 ### `fabric`
 - **`AptOresModelLoadingPlugin`** - registered from `AptOresFabricClient` (the mod's only
   entrypoint, `"client"` in `fabric.mod.json`). On every resource reload:
   1. `OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()))`
      re-reads every `ore_types` JSON off the just-updated resource manager.
-  2. `context.addModels(...)` pins the overlay model ids so they get loaded, baked, and their
-     textures stitched into the block atlas even though no blockstate/item references them.
-  3. `context.modifyModelAfterBake().register(...)` inspects every baked model as it comes
-     through:
-     - if its resource id matches one of our overlay model ids, the baked overlay model is
-       stashed in `OverlayModelRegistry` (keyed by `OreTypeDefinition`) and returned unchanged;
-     - if its resource id matches one of our target ore block model ids (via
-       `OreTypeRegistry.byBlockModelId`), the vanilla baked model is wrapped in a new
-       `AptOresBakedModel` and that replaces it;
-     - anything else passes through untouched.
-- **`AptOresBakedModel`** - implements both `BakedModel` and `FabricBakedModel`.
-  `emitBlockQuads` samples the backdrop, fetches its real baked model via
+  2. `context.addModel(key, SimpleUnbakedExtraModel.blockStateModel(...))` pins each overlay
+     model as an "extra" model (Fabric's replacement for the old `addModels`/
+     `modifyModelAfterBake` pinning idiom) so it gets loaded, baked, and its texture stitched
+     into the block atlas even though no blockstate/item references it directly. The
+     `ExtraModelKey<BlockStateModel>` it was baked under is stashed in `OverlayModelRegistry`.
+  3. `context.modifyBlockModelAfterBake().register(...)` inspects every *real* block's baked
+     model as it comes through: if the block id (`ctx.state().getBlock()`) matches an
+     `OreTypeDefinition` (via `OreTypeRegistry.byBlockId`), the vanilla model is wrapped in a new
+     `AptOresBakedModel`; anything else passes through untouched. Our own pinned overlay models
+     never reach this callback since they're baked through the separate "extra model" pipeline.
+- **`AptOresBakedModel`** - implements `BlockStateModel` directly. `emitQuads` samples the
+  backdrop, fetches its real `BlockStateModel` via
   `Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop)`, emits its quads as the
-  base layer, then emits the overlay model's quads (translucent material, `disableDiffuse`) on
-  top. **See the "Fabric FabricBakedModel gotcha" section below before touching this file** -
-  the composition logic looks simple but has one very unintuitive trap that cost real debugging
-  time.
-- **`OverlayModelRegistry`** - a tiny static `Map<OreTypeDefinition, BakedModel>`, reset and
-  repopulated on every resource reload by the plugin above. Exists because Fabric's
-  `modifyModelAfterBake` fires per-model as baking proceeds rather than handing back one batch
-  map (unlike NeoForge's `ModifyBakingResult`, see below) - by the time anything actually
-  renders, every bake in the reload has finished, so a lazy lookup here is always safe regardless
-  of bake order.
-- **`QuadHelper.offsetQuad`** - only used by the `getQuads(...)` fallback (see below), nudges a
-  quad along its face normal to prevent z-fighting between backdrop and overlay.
+  base layer by delegating straight to that model's own `emitQuads`, then emits the overlay
+  model's quads on top through a pushed `QuadTransform` that offsets each quad along its face
+  normal and forces `renderLayer(ChunkSectionLayer.TRANSLUCENT)`. **The old "Fabric
+  `FabricBakedModel` gotcha" below no longer applies in 1.21.9** - Fabric now mixes
+  `FabricBlockStateModel`'s default methods directly onto the `BlockStateModel` interface itself
+  (confirmed by decompiling `fabric-renderer-api-v1`'s own `WrapperBlockStateModel`, which
+  `implements BlockStateModel` and freely `@Override`s `emitQuads`), so every `BlockStateModel`
+  - including plain vanilla ones - can be called through `emitQuads` directly with no
+  `isVanillaAdapter()`-style guard needed.
+- **`OverlayModelRegistry`** - a tiny static `Map<OreTypeDefinition, ExtraModelKey<BlockStateModel>>`,
+  reset and repopulated on every resource reload by the plugin above. The actual baked
+  `BlockStateModel` is fetched lazily, on every call, via
+  `((FabricBakedModelManager) Minecraft.getInstance().getModelManager()).getModel(key)` - extra
+  models are guaranteed baked before anything renders, so this lookup is always safe regardless
+  of bake order (same reasoning the old per-model-callback registry relied on).
 
 ### `neoforge`
-- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterAdditional`
-  first calls `OreTypeRegistry.reload(OreTypeLoader.load(...))` (same as Fabric), then pins the
-  overlay models (same purpose as Fabric's `addModels`), using
-  `ModelResourceLocation.standalone(...)` since these aren't tied to any blockstate/item.
-  `ModelEvent.ModifyBakingResult` then gets the *whole* bake result as one mutable
-  `Map<ModelResourceLocation, BakedModel>` - for every entry whose block id matches an
-  `OreTypeDefinition`, it looks up that type's already-baked overlay model from the *same* map and
-  replaces the entry's value with a new `AptOresModel` wrapping both. Much simpler than Fabric's
-  per-model-callback + registry approach, since NeoForge hands you the complete map in one shot.
-- **`AptOresModel`** - NeoForge's `IDynamicBakedModel` equivalent of the Fabric composite.
-  Because `getQuads(...)` on this loader doesn't receive a `BlockAndTintGetter`/`BlockPos`
-  directly, the backdrop is sampled in `getModelData(level, pos, state, modelData)` (which *does*
-  get position) and stashed in a `ModelProperty<BlockState>`; `getQuads` then reads it back out
-  of `ModelData`. `getRenderTypes` unions the backdrop's own render types with
-  `RenderType.translucent()` so both layers actually get built into the chunk mesh.
+- **`AptOresNeoForgeClient`** - the entire mod on this loader. `ModelEvent.RegisterStandalone`
+  (NeoForge's 1.21.9 replacement for the removed `ModelEvent.RegisterAdditional`) first calls
+  `OreTypeRegistry.reload(OreTypeLoader.load(...))` (same as Fabric), then pins each overlay
+  model via `event.register(key, SimpleUnbakedStandaloneModel.quadCollection(modelId))`, keyed by
+  a `StandaloneModelKey<QuadCollection>` stashed per ore type. `ModelEvent.ModifyBakingResult`
+  then gets the *whole* bake result as one mutable `Map<BlockState, BlockStateModel>` (blockstate
+  models are now keyed directly by `BlockState`, not `ModelResourceLocation`) - for every entry
+  whose block id matches an `OreTypeDefinition`, it looks up that type's already-baked overlay
+  `QuadCollection` from `bakingResult.standaloneModels()` and replaces the entry's value with a
+  new `AptOresModel` wrapping both.
+- **`AptOresModel`** - implements NeoForge's `DynamicBlockStateModel` (a `BlockStateModel`
+  subtype whose `collectParts` overload *does* receive a `BlockAndTintGetter`/`BlockPos`, unlike
+  plain vanilla `BlockStateModel`). It samples the backdrop directly in `collectParts`, delegates
+  to the backdrop's own `collectParts` for the base layer, then appends a single synthetic
+  `BlockModelPart` wrapping the overlay `QuadCollection` (quads offset via `QuadHelper`) whose
+  `getRenderType(BlockState)` override (from the mixed-in `BlockModelPartExtension`) forces
+  `ChunkSectionLayer.TRANSLUCENT` regardless of the backdrop's own layer.
 
 ### `forge`
-- Same design as `neoforge` - Forge exposes the identical `ModelEvent.RegisterAdditional` /
-  `ModelEvent.ModifyBakingResult` pair (NeoForge inherited them from Forge at the fork, just under
-  `net.neoforged.*` instead of `net.minecraftforge.*`) - but Forge's `@Mod` annotation has no
-  `dist` parameter, so the mod is split into two classes instead of NeoForge's one:
+- Regular (Minecraft)Forge 1.21.9 still has **no equivalent of `ModelEvent.RegisterAdditional` or
+  a `standaloneModels()` facility** (same gap as 1.21.4, see `docs/PORTING.md` §4). Instead of the
+  old throwaway-item-model-JSON trick (`assets/aptores/items/overlay_*.json`, which stopped
+  working once `BlockModelWrapper` lost its public `model: BakedModel` field in 1.21.9's item
+  rework), each overlay model is now shadowed by a **synthetic, never-registered `Block`** whose
+  `StateDefinition` is registered via the new `ModelEvent.RegisterModelStateDefinitions` event -
+  the vanilla blockstate-model loader then bakes `assets/aptores/blockstates/overlay_*.json` for
+  it exactly like a real block's blockstate file, and the baked result shows up in
+  `ModelBakery.BakingResult.blockStateModels()` keyed by that synthetic block's default state,
+  right alongside the real ore blocks.
   - **`AptOresForge`** - the required `@Mod(MOD_ID)` entry point. Loader-neutral, does nothing,
     exists only because Forge requires exactly one `@Mod`-annotated class per mod id.
-  - **`AptOresForgeClient`** - everything else (identical logic to `AptOresNeoForgeClient`), gated
-    with `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
+  - **`AptOresForgeClient`** - everything else, gated with
+    `@Mod.EventBusSubscriber(bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)` so
     Forge never loads this class - and therefore never resolves its client-only imports like
-    `BakedModel`/`Minecraft` - on a dedicated server.
-- **`AptOresModel`** / **`QuadHelper`** - byte-for-byte the same approach as `neoforge`'s, just
-  against `net.minecraftforge.client.model.data.*` / `net.minecraftforge.client.ChunkRenderTypeSet`
-  instead of the `net.neoforged.neoforge.*` equivalents.
+    `BlockStateModel`/`Minecraft` - on a dedicated server. Note Forge's event-bus annotations moved
+    package in 1.21.9 (`@SubscribeEvent` is now `net.minecraftforge.eventbus.api.listener.SubscribeEvent`)
+    and `ModelEvent`'s member events became records (`ModifyBakingResult.getResults()` instead of
+    `.getBakingResult()`) - `@Mod.EventBusSubscriber` + `@SubscribeEvent` on a static method still
+    works unchanged otherwise.
+  - **`AptOresModel`** - implements plain `BlockStateModel`, using Forge's own `IForgeBlockStateModel`
+    extension (`getModelData`/`collectParts(random, dest, data, renderType)`) to sample the
+    backdrop and stash it in a `ModelProperty<BlockState>`, the same pattern the pre-1.21.9 Forge
+    and NeoForge models both used. The overlay's own baked `BlockStateModel` (from the synthetic
+    block above) is asked for its parts via `collectParts(random)`, each of which is wrapped to
+    offset its quads (`QuadHelper`) and force `layer()` (from `IForgeBlockModelPart`) to
+    `ChunkSectionLayer.TRANSLUCENT`.
 
 ### Assets (`common/src/main/resources/assets/aptores/`)
 - `aptores/ore_types/<type>.json` - the `OreTypeLoader` definitions for the 8 built-in ores (see
@@ -157,8 +185,10 @@ Loader-agnostic pieces only - `OreTypeDefinition`, `OreTypeLoader`, `OreTypeRegi
   overlay texture - neither loader hand-bakes this themselves (the old mod did, by force-feeding
   a sprite into a manually-invoked `cube_all` bake; this version just lets the normal pipeline do
   it and asks for the result via `addModels`/`RegisterAdditional`).
-- No item models, blockstates, or loot tables anywhere - there's nothing here for datagen to
-  produce, since no blocks/items are registered.
+- No item models, blockstates, or loot tables for *real* blocks/items anywhere - there's nothing
+  here for datagen to produce, since no blocks/items are registered. (`forge/src/main/resources/
+  assets/aptores/blockstates/overlay_*.json` is the one exception - see the `forge` section above;
+  it exists purely as a loader-specific plumbing trick, not a real block.)
 
 ## Known non-obvious bugs already fixed here (read before changing rendering code)
 
@@ -183,47 +213,34 @@ because it was generated once by whatever Architectury project wizard was origin
 Architectury project without also copying every per-subproject `gradle.properties`, you will hit
 this again.**
 
-### 2. Fabric: `instanceof FabricBakedModel` is always true - check `isVanillaAdapter()` instead
-This one is subtle and caused a real, confusing bug (backdrop rendered as solid black, overlay
-rendered fine on top - see `AptOresBakedModel` git history around the "black background" fix).
+### 2. Fabric: the old `instanceof FabricBakedModel` gotcha (pre-1.21.9 only, kept for history)
+This bit on Fabric versions through 1.21.4/1.21.6-ish and is worth knowing about even though it
+**no longer applies as of the 1.21.9 port** (see below) - it caused a real, confusing bug
+(backdrop rendered as solid black, overlay rendered fine on top).
 
-`fabric-renderer-api-v1` mixes `FabricBakedModel` onto **every** `BakedModel` in the game via
-`BakedModelMixin` (`@Mixin(BakedModel.class)` merging the interface in). `FabricBakedModel`
-declares `isVanillaAdapter()`, `emitBlockQuads(...)`, and `emitItemQuads(...)` all as `default`
-methods, with `isVanillaAdapter()` defaulting to `true` for anything that didn't explicitly
-implement the interface itself (plain vanilla models like `stone`'s baked model, or our own
-overlay `cube_all` models - anything baked through the ordinary vanilla pipeline). This means:
+`fabric-renderer-api-v1` used to mix `FabricBakedModel` onto **every** `BakedModel` in the game
+via a mixin on the concrete baked-model class, with `isVanillaAdapter()` defaulting to `true` for
+anything that didn't explicitly implement the interface itself. That made a plain
+`instanceof FabricBakedModel` check always true, including for plain stone, silently dropping
+that model's quads unless the code also checked `!isVanillaAdapter()` and manually iterated
+`model.getQuads(...)` with an explicit `emitter.fromVanilla(quad, material, side).emit()` for the
+vanilla-adapter case (note the `.emit()` - `fromVanilla(...)` alone only populates the emitter's
+current quad slot).
 
-```java
-if (backdropModel instanceof FabricBakedModel fabricBackdrop) {
-    fabricBackdrop.emitBlockQuads(...); // WRONG: always taken, backdrop is always "true" here
-}
-```
+**As of the 1.21.9 port, this class of gotcha is gone.** Fabric's rewritten renderer API mixes
+`FabricBlockStateModel`'s default methods (`emitQuads`, `particleSprite`) directly onto the
+`BlockStateModel` *interface itself*, not onto one concrete implementing class - confirmed by
+decompiling `fabric-renderer-api-v1`'s own `WrapperBlockStateModel`, which plainly
+`implements BlockStateModel` and `@Override`s `emitQuads` with no separate interface cast needed.
+Every `BlockStateModel`, including vanilla ones, can now be called through `emitQuads` directly;
+its default implementation already safely delegates to `collectParts` + each part's own
+`emitQuads`. `AptOresBakedModel` on Fabric no longer needs an `isVanillaAdapter()`-style guard at
+all - see the `fabric` section above. **If a future Fabric API version reintroduces a similar
+split, re-check this before assuming a plain `instanceof` test is safe.**
 
-is **always true**, for every model, including plain stone - so this branch is always taken, and
-for a vanilla-adapter model the default `emitBlockQuads` is a stub that emits nothing. The
-correct check, used throughout `AptOresBakedModel` now:
-
-```java
-private static boolean isRealFabricModel(@Nullable BakedModel model) {
-    return model instanceof FabricBakedModel fabricModel && !fabricModel.isVanillaAdapter();
-}
-```
-
-Only delegate to `emitBlockQuads`/`emitItemQuads` when a model is a *genuine* Fabric-aware model
-(another mod's custom `FabricBakedModel` that wants control over its own per-quad materials).
-For everything else (the overwhelming common case - plain vanilla blocks), manually iterate
-`model.getQuads(state, side, random)` per direction and push each quad through
-`context.getEmitter().fromVanilla(quad, material, side).emit()` - note the explicit `.emit()`;
-`fromVanilla(...)` only populates the emitter's current quad slot, it does not submit it on its
-own, so a *second*, once-real bug (missing `.emit()` calls) was fixed here too. Both bugs
-happened to mask each other during debugging - fixing `.emit()` alone did nothing because the
-buggy `instanceof` check meant that code path was never even reached for stone; only fixing both
-together resolved it.
-
-NeoForge's model doesn't have an equivalent gotcha: `getQuads`/`getRenderTypes` on that loader
-work directly off the vanilla `BakedModel` interface (no Fabric-style multi-material emitter),
-so `AptOresModel` never had this class of bug.
+NeoForge's and Forge's models don't have an equivalent gotcha: their `BlockModelPart`/
+`BlockStateModel` extension methods work directly off the vanilla interfaces (no Fabric-style
+multi-material emitter), so `AptOresModel` on those loaders never had this class of bug.
 
 ### 3. Forge needed `architectury-loom` bumped to `1.17-SNAPSHOT` (and Gradle to 9.5.0) just to launch
 `:forge:runClient` crashed on startup with `1.11-SNAPSHOT` (the version `fabric`/`neoforge` still
@@ -259,15 +276,19 @@ this distinction; `developmentNeoForge.extendsFrom common` alone is fine there.
 ./gradlew build
 ```
 
-Requires JDK 21. Targets Minecraft 1.21.1 (Fabric + NeoForge, via Architectury Loom).
+Requires JDK 21. Targets Minecraft 1.21.9 (Fabric + NeoForge + Forge, via Architectury Loom).
 
 ```
 ./gradlew :fabric:runClient
 ./gradlew :neoforge:runClient
+./gradlew :forge:runClient
 ```
 
-both launch a dev client with the mod active; both loaders have been manually verified to render
-correctly (backdrop + overlay compositing) as of this writing.
+each launches a dev client with the mod active. As of the 1.21.9 port, this has been verified by
+a clean `gradlew clean build` across all three loaders but **not** yet manually confirmed
+in-game via `runClient` - a clean compile does not guarantee the new API calls actually produce
+the same visual result (see `docs/PORTING.md` §6). Do that check before relying on this section's
+"both loaders have been manually verified" claim again.
 
 ## Deliberately not done / known limitations
 
@@ -275,9 +296,23 @@ correctly (backdrop + overlay compositing) as of this writing.
   right-click-to-set-backdrop interaction (like the old mod had); it was dropped in favor of a
   fully stateless design. "Adapting" now means literally "place the material you want touching
   the ore" - there's no way to give an ore a backdrop that isn't actually present next to it.
-- **Item/inventory rendering always uses a stone backdrop** (`getQuads`/`emitItemQuads` fall back
-  to `Blocks.STONE.defaultBlockState()`) since there's no world/position available for an
-  `ItemStack` in a hand or GUI slot. Same fallback the old mod used.
+- **Item/inventory rendering always uses a stone backdrop** (the context-free `collectParts`/
+  `getQuads` fallbacks use `Blocks.STONE.defaultBlockState()`) since there's no world/position
+  available for an `ItemStack` in a hand or GUI slot. Same fallback the old mod used.
+- **As of the 1.21.9 port, item/inventory rendering for the ore items themselves is not
+  intercepted at all** on any loader. Through 1.21.4, block and item baking still shared enough
+  machinery that replacing a block's baked model (via `ModifyBakingResult`) transparently also
+  affected the block's auto-derived item model. 1.21.9 split block rendering (`BlockStateModel`)
+  and item rendering (`ItemModel`, baked into a separate, eagerly-flattened `List<BakedQuad>`
+  inside `BlockModelWrapper`) into two independent bake passes that both complete *before*
+  `ModifyBakingResult`/`ModelEvent.ModifyBakingResult` fires, so mutating `blockStateModels()` no
+  longer has any effect on `itemStackModels()`. Concretely: holding an adapted ore in your hand or
+  looking at it in an inventory slot now shows the **plain vanilla item texture**, not the
+  backdrop+overlay composite. Fixing this would mean also replacing entries in
+  `bakingResult.itemStackModels()` for each real ore item id with a custom `ItemModel` (not just
+  the existing overlay-model-pinning workaround, which only concerns the *overlay's own*
+  placeholder id) - not attempted in this port; flagged here as a known regression for whoever
+  picks it up next.
 - **No item models, loot tables, or datagen** - there's genuinely nothing to generate, since this
   mod registers zero blocks/items. If that ever changes (e.g. adding a config/debug item), datagen
   would need to be wired up from scratch; neither loader module has any `runs { data { ... } }`

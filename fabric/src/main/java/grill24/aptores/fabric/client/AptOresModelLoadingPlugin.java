@@ -5,12 +5,13 @@ import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.fabric.client.model.AptOresBakedModel;
+import net.fabricmc.fabric.api.client.model.loading.v1.ExtraModelKey;
 import net.fabricmc.fabric.api.client.model.loading.v1.ModelLoadingPlugin;
+import net.fabricmc.fabric.api.client.model.loading.v1.SimpleUnbakedExtraModel;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Wraps the vanilla baked models for every ore block Apt Ores knows about, purely at the
@@ -28,29 +29,23 @@ public final class AptOresModelLoadingPlugin {
             OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
             OverlayModelRegistry.reset();
 
-            // Pin our overlay-only models so they get loaded, baked, and stitched into the
-            // block atlas even though no blockstate or item references them directly.
-            List<ResourceLocation> overlayModelIds = new ArrayList<>();
+            // Pin our overlay-only (cube_all + cutout ore texture) models as "extra" models so
+            // they get loaded, baked, and stitched into the block atlas even though no
+            // blockstate/item references them; the baked result is fetched lazily later via the
+            // key stashed in OverlayModelRegistry.
             for (OreTypeDefinition type : OreTypeRegistry.all()) {
-                overlayModelIds.add(type.overlayModelId());
+                ResourceLocation modelId = type.overlayModelId();
+                ExtraModelKey<BlockStateModel> key = ExtraModelKey.create(modelId::toString);
+                OverlayModelRegistry.put(type, key);
+                context.addModel(key, SimpleUnbakedExtraModel.blockStateModel(modelId));
             }
-            context.addModels(overlayModelIds);
 
-            context.modifyModelAfterBake().register((model, ctx) -> {
-                ResourceLocation resourceId = ctx.id();
-
-                for (OreTypeDefinition type : OreTypeRegistry.all()) {
-                    if (type.overlayModelId().equals(resourceId)) {
-                        OverlayModelRegistry.put(type, model);
-                        return model;
-                    }
-                }
-
-                OreTypeDefinition oreType = OreTypeRegistry.byBlockModelId(resourceId);
+            context.modifyBlockModelAfterBake().register((model, ctx) -> {
+                ResourceLocation blockId = BuiltInRegistries.BLOCK.getKey(ctx.state().getBlock());
+                OreTypeDefinition oreType = OreTypeRegistry.byBlockId(blockId);
                 if (oreType != null) {
                     return new AptOresBakedModel(oreType, model);
                 }
-
                 return model;
             });
 

@@ -3,20 +3,18 @@ package grill24.aptores.forge.client.model;
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
-import net.minecraft.client.renderer.block.model.ItemTransforms;
+import net.minecraft.client.renderer.block.model.BlockModelPart;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.client.ChunkRenderTypeSet;
 import net.minecraftforge.client.model.data.ModelData;
 import net.minecraftforge.client.model.data.ModelProperty;
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -30,122 +28,89 @@ import java.util.List;
  * this stays in sync automatically when a neighbor is placed or broken.
  *
  * <p>{@code vanillaOreModel} (the model this instance replaces) is kept only as a source of
- * truth for particle icon and item transforms; its geometry is never emitted.
+ * truth for the particle icon; its geometry is never emitted. {@code overlayModel} is the
+ * already-baked overlay geometry, fetched via the synthetic-blockstate trick in
+ * {@code AptOresForgeClient} (regular Forge dropped {@code ModelEvent.RegisterAdditional} and
+ * never exposed an equivalent standalone-model facility - see {@code docs/DEVELOPMENT.md}).
  */
-public class AptOresModel implements BakedModel {
+public class AptOresModel implements BlockStateModel {
     public static final ModelProperty<BlockState> BACKDROP_PROPERTY = new ModelProperty<>();
 
     private static final float OVERLAY_OFFSET = 0.001f;
-    private static final ChunkRenderTypeSet OVERLAY_TYPES = ChunkRenderTypeSet.of(RenderType.translucent());
 
     private final OreTypeDefinition oreType;
-    private final BakedModel vanillaOreModel;
-    private final BakedModel overlayModel;
+    private final BlockStateModel vanillaOreModel;
+    private final BlockStateModel overlayModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BakedModel vanillaOreModel, BakedModel overlayModel) {
+    public AptOresModel(OreTypeDefinition oreType, BlockStateModel vanillaOreModel, BlockStateModel overlayModel) {
         this.oreType = oreType;
         this.vanillaOreModel = vanillaOreModel;
         this.overlayModel = overlayModel;
     }
 
+    /** Context-free fallback (no world/position available) - matches item/inventory rendering. */
     @Override
-    public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, @NotNull RandomSource rand) {
-        return getQuads(state, side, rand, ModelData.EMPTY, null);
+    public void collectParts(RandomSource random, List<BlockModelPart> parts) {
+        collectParts(random, parts, ModelData.EMPTY, null);
     }
 
-    @Override
-    public @NotNull List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side,
-                                              @NotNull RandomSource rand, @NotNull ModelData modelData,
-                                              @Nullable RenderType renderType) {
-        List<BakedQuad> quads = new ArrayList<>();
-
-        BlockState backdrop = modelData.get(BACKDROP_PROPERTY);
-        if (backdrop == null) {
-            backdrop = BackdropSampler.DEFAULT_BACKDROP;
-        }
-
-        BakedModel backdropModel = getBackdropModel(backdrop);
-        if (backdropModel != null) {
-            boolean shouldRenderBackdrop = renderType == null;
-            if (!shouldRenderBackdrop) {
-                try {
-                    shouldRenderBackdrop = backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY).contains(renderType);
-                } catch (Exception e) {
-                    shouldRenderBackdrop = renderType == RenderType.solid();
-                }
-            }
-            if (shouldRenderBackdrop) {
-                quads.addAll(backdropModel.getQuads(backdrop, side, rand, ModelData.EMPTY, renderType));
-            }
-        }
-
-        if (renderType == null || OVERLAY_TYPES.contains(renderType)) {
-            for (BakedQuad quad : overlayModel.getQuads(state, side, rand, ModelData.EMPTY, renderType)) {
-                quads.add(QuadHelper.offsetQuad(quad, side, OVERLAY_OFFSET));
-            }
-        }
-
-        return quads;
-    }
-
-    private BakedModel getBackdropModel(BlockState backdrop) {
-        return Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
-    }
-
-    @Override
-    public @NotNull ModelData getModelData(@NotNull BlockAndTintGetter level, @NotNull BlockPos pos,
-                                            @NotNull BlockState state, @NotNull ModelData modelData) {
+    /** IForgeBlockStateModel extension point: stash the sampled backdrop for collectParts to read back. */
+    public ModelData getModelData(BlockAndTintGetter level, BlockPos pos, BlockState state, ModelData modelData) {
         BlockState backdrop = BackdropSampler.sample(level, pos);
         return modelData.derive().with(BACKDROP_PROPERTY, backdrop).build();
     }
 
-    @Override
-    public boolean useAmbientOcclusion() {
-        return true;
-    }
-
-    @Override
-    public boolean isGui3d() {
-        return true;
-    }
-
-    @Override
-    public boolean usesBlockLight() {
-        return true;
-    }
-
-    @Override
-    public TextureAtlasSprite getParticleIcon() {
-        return vanillaOreModel.getParticleIcon();
-    }
-
-    @Override
-    public TextureAtlasSprite getParticleIcon(@NotNull ModelData data) {
-        return vanillaOreModel.getParticleIcon(data);
-    }
-
-    @Override
-    public ChunkRenderTypeSet getRenderTypes(@NotNull BlockState state, @NotNull RandomSource rand, @NotNull ModelData data) {
+    /** IForgeBlockStateModel extension point: the real, world-aware part-collection path. */
+    public void collectParts(RandomSource random, List<BlockModelPart> dest, ModelData data, @Nullable ChunkSectionLayer renderType) {
         BlockState backdrop = data.get(BACKDROP_PROPERTY);
         if (backdrop == null) {
             backdrop = BackdropSampler.DEFAULT_BACKDROP;
         }
 
-        BakedModel backdropModel = getBackdropModel(backdrop);
-        ChunkRenderTypeSet backdropTypes = ChunkRenderTypeSet.of(RenderType.solid());
-        if (backdropModel != null) {
-            try {
-                backdropTypes = backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY);
-            } catch (Exception ignored) {
-                // Keep the SOLID fallback above.
-            }
-        }
+        BlockStateModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
+        backdropModel.collectParts(random, dest);
 
-        return ChunkRenderTypeSet.union(backdropTypes, OVERLAY_TYPES);
+        for (BlockModelPart part : overlayModel.collectParts(random)) {
+            dest.add(new OverlayPart(part));
+        }
     }
 
     @Override
-    public ItemTransforms getTransforms() {
-        return vanillaOreModel.getTransforms();
+    public TextureAtlasSprite particleIcon() {
+        return vanillaOreModel.particleIcon();
+    }
+
+    /** Wraps one of the overlay's own parts, offsetting its quads and forcing the translucent chunk layer. */
+    private static final class OverlayPart implements BlockModelPart {
+        private final BlockModelPart delegate;
+
+        OverlayPart(BlockModelPart delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public List<BakedQuad> getQuads(Direction direction) {
+            List<BakedQuad> raw = delegate.getQuads(direction);
+            List<BakedQuad> offset = new ArrayList<>(raw.size());
+            for (BakedQuad quad : raw) {
+                offset.add(QuadHelper.offsetQuad(quad, direction, OVERLAY_OFFSET));
+            }
+            return offset;
+        }
+
+        @Override
+        public boolean useAmbientOcclusion() {
+            return false;
+        }
+
+        @Override
+        public TextureAtlasSprite particleIcon() {
+            return delegate.particleIcon();
+        }
+
+        /** Force this part onto the translucent chunk layer regardless of the backdrop's own layer. */
+        public ChunkSectionLayer layer() {
+            return ChunkSectionLayer.TRANSLUCENT;
+        }
     }
 }

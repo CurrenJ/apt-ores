@@ -6,17 +6,22 @@ import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.neoforge.client.model.AptOresModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.client.resources.model.ModelBakery;
-import net.minecraft.client.resources.model.ModelResourceLocation;
+import net.minecraft.client.resources.model.QuadCollection;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.IModBusEvent;
 import net.neoforged.neoforge.client.event.ModelEvent;
+import net.neoforged.neoforge.client.model.standalone.SimpleUnbakedStandaloneModel;
+import net.neoforged.neoforge.client.model.standalone.StandaloneModelKey;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -29,38 +34,46 @@ import java.util.Map;
 @EventBusSubscriber(modid = AptOres.MOD_ID, value = Dist.CLIENT)
 @Mod(value = AptOres.MOD_ID, dist = Dist.CLIENT)
 public class AptOresNeoForgeClient implements IModBusEvent {
+    /** Keys the overlay-only geometry was pinned under via {@link ModelEvent.RegisterStandalone}. */
+    private static final Map<OreTypeDefinition, StandaloneModelKey<QuadCollection>> OVERLAY_KEYS = new HashMap<>();
 
     @SubscribeEvent
-    public static void onRegisterAdditionalModels(ModelEvent.RegisterAdditional event) {
+    public static void onRegisterStandalone(ModelEvent.RegisterStandalone event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
+        OVERLAY_KEYS.clear();
 
-        // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded,
-        // baked, and stitched into the block atlas even though no blockstate references them.
+        // Pin our overlay-only (cube_all + cutout ore texture) models as standalone models so
+        // they get loaded, baked, and stitched into the block atlas even though no
+        // blockstate/item references them.
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            event.register(type.overlayModelId());
+            ResourceLocation modelId = type.overlayModelId();
+            StandaloneModelKey<QuadCollection> key = new StandaloneModelKey<>(modelId::toString);
+            OVERLAY_KEYS.put(type, key);
+            event.register(key, SimpleUnbakedStandaloneModel.quadCollection(modelId));
         }
     }
 
     @SubscribeEvent
     public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
         ModelBakery.BakingResult bakingResult = event.getBakingResult();
-        Map<ModelResourceLocation, BakedModel> models = bakingResult.blockStateModels();
-        Map<ResourceLocation, BakedModel> standaloneModels = bakingResult.standaloneModels();
+        Map<BlockState, BlockStateModel> models = bakingResult.blockStateModels();
 
-        for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
-            ResourceLocation blockId = entry.getKey().id();
+        for (Map.Entry<BlockState, BlockStateModel> entry : models.entrySet()) {
+            BlockState state = entry.getKey();
+            ResourceLocation blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
             OreTypeDefinition type = OreTypeRegistry.byBlockId(blockId);
             if (type == null) {
                 continue;
             }
 
-            BakedModel overlayModel = standaloneModels.get(type.overlayModelId());
-            if (overlayModel == null) {
+            StandaloneModelKey<QuadCollection> key = OVERLAY_KEYS.get(type);
+            QuadCollection overlayQuads = key == null ? null : bakingResult.standaloneModels().get(key);
+            if (overlayQuads == null) {
                 AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
                 continue;
             }
 
-            entry.setValue(new AptOresModel(type, entry.getValue(), overlayModel));
+            entry.setValue(new AptOresModel(type, entry.getValue(), overlayQuads));
         }
     }
 }

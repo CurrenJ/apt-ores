@@ -6,17 +6,19 @@ import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
 import grill24.aptores.forge.client.model.AptOresModel;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.item.BlockModelWrapper;
-import net.minecraft.client.renderer.item.ItemModel;
-import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.client.resources.model.ModelBakery;
-import net.minecraft.client.resources.model.ModelResourceLocation;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ModelEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -26,41 +28,54 @@ import java.util.Map;
  * swapping each target ore's baked model for a composite that samples its neighbors live - the
  * same technique connected-texture mods (e.g. Continuity) use for neighbor-aware rendering.
  *
- * <p>Unlike NeoForge, (Minecraft)Forge 1.21.4 no longer exposes a {@code ModelEvent.RegisterAdditional}
- * hook (or a {@code standaloneModels()} baking-result map) for pinning a model that no blockstate or
- * item references. To still get our overlay-only models loaded and baked, each one is shadowed by a
- * throwaway client item definition (see {@code assets/aptores/items/overlay_*.json}) - the vanilla
- * per-item model JSON loader indexes those by file path regardless of whether a real item exists
- * with that id, so they show up in {@link ModelBakery.BakingResult#itemStackModels()} without needing
- * any block/item registration. The resulting {@link ItemModel} is a plain {@link BlockModelWrapper}
- * for a "minecraft:model"-typed definition, whose public {@code model} field is the real baked model.
+ * <p>Regular (Minecraft)Forge 1.21.9 still has no {@code ModelEvent.RegisterAdditional}-style hook
+ * (or a {@code standaloneModels()} baking-result facility like NeoForge's) for pinning a model
+ * that no blockstate or item references. Instead, each overlay model is shadowed by a synthetic,
+ * never-registered {@link Block} whose {@link StateDefinition} is registered via
+ * {@code ModelEvent.RegisterModelStateDefinitions} - the vanilla blockstate-model loader then
+ * bakes {@code assets/aptores/blockstates/overlay_*.json} for it exactly like a real block, and
+ * the result shows up in {@link net.minecraft.client.resources.model.ModelBakery.BakingResult#blockStateModels()}
+ * keyed by that synthetic block's default state.
  */
 @Mod.EventBusSubscriber(modid = AptOres.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class AptOresForgeClient {
+    /** The synthetic per-type block state whose baked model is our pinned overlay geometry. */
+    private static final Map<OreTypeDefinition, BlockState> OVERLAY_STATES = new HashMap<>();
 
-    /** The throwaway item-model id shadowing {@code type.overlayModelId()} (see class javadoc). */
-    private static ResourceLocation overlayItemId(OreTypeDefinition type) {
+    /** The throwaway block id shadowing {@code type.overlayModelId()} (see class javadoc). */
+    private static ResourceLocation overlayBlockId(OreTypeDefinition type) {
         ResourceLocation modelId = type.overlayModelId();
         return ResourceLocation.fromNamespaceAndPath(modelId.getNamespace(), modelId.getPath().replaceFirst("^block/", ""));
     }
 
     @SubscribeEvent
-    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+    public static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
+        OVERLAY_STATES.clear();
 
-        ModelBakery.BakingResult bakingResult = event.getResults();
-        Map<ModelResourceLocation, BakedModel> models = bakingResult.blockStateModels();
-        Map<ResourceLocation, ItemModel> itemModels = bakingResult.itemStackModels();
+        for (OreTypeDefinition type : OreTypeRegistry.all()) {
+            Block dummy = new Block(BlockBehaviour.Properties.of());
+            @SuppressWarnings("unchecked")
+            StateDefinition<Block, BlockState> stateDefinition = (StateDefinition<Block, BlockState>) dummy.getStateDefinition();
+            event.register(overlayBlockId(type), stateDefinition);
+            OVERLAY_STATES.put(type, dummy.defaultBlockState());
+        }
+    }
 
-        for (Map.Entry<ModelResourceLocation, BakedModel> entry : models.entrySet()) {
-            ResourceLocation blockId = entry.getKey().id();
+    @SubscribeEvent
+    public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+        Map<BlockState, BlockStateModel> models = event.getResults().blockStateModels();
+
+        for (Map.Entry<BlockState, BlockStateModel> entry : models.entrySet()) {
+            BlockState state = entry.getKey();
+            ResourceLocation blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock());
             OreTypeDefinition type = OreTypeRegistry.byBlockId(blockId);
             if (type == null) {
                 continue;
             }
 
-            ItemModel overlayItemModel = itemModels.get(overlayItemId(type));
-            BakedModel overlayModel = overlayItemModel instanceof BlockModelWrapper wrapper ? wrapper.model : null;
+            BlockState overlayState = OVERLAY_STATES.get(type);
+            BlockStateModel overlayModel = overlayState == null ? null : models.get(overlayState);
             if (overlayModel == null) {
                 AptOres.LOGGER.warn("Apt Ores: overlay model for {} was not baked; leaving {} untouched", type.name(), blockId);
                 continue;
