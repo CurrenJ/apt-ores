@@ -3,7 +3,6 @@ package grill24.aptores.forge.client.model;
 import grill24.aptores.BackdropSampler;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.QuadHelper;
-import grill24.aptores.forge.client.OverlayModelRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BlockModelPart;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
@@ -43,10 +42,12 @@ public class AptOresModel implements BlockStateModel {
 
     private final OreTypeDefinition oreType;
     private final BlockStateModel delegate;
+    private final BlockStateModel overlayModel;
 
-    public AptOresModel(OreTypeDefinition oreType, BlockStateModel delegate) {
+    public AptOresModel(OreTypeDefinition oreType, BlockStateModel delegate, BlockStateModel overlayModel) {
         this.oreType = oreType;
         this.delegate = delegate;
+        this.overlayModel = overlayModel;
     }
 
     @Override
@@ -76,7 +77,6 @@ public class AptOresModel implements BlockStateModel {
 
         // Overlay: this ore's cutout fragments, offset slightly outward along each face so they
         // don't z-fight with the backdrop layer directly beneath them.
-        BlockStateModel overlayModel = OverlayModelRegistry.get(oreType);
         if (overlayModel != null) {
             List<BlockModelPart> overlayParts = new ArrayList<>();
             overlayModel.collectParts(random, overlayParts);
@@ -111,7 +111,6 @@ public class AptOresModel implements BlockStateModel {
         BlockStateModel backdropModel = Minecraft.getInstance().getBlockRenderer().getBlockModel(backdrop);
         Collection<ChunkSectionLayer> layers = new LinkedHashSet<>(backdropModel.getRenderTypes(backdrop, rand, ModelData.EMPTY));
 
-        BlockStateModel overlayModel = OverlayModelRegistry.get(oreType);
         if (overlayModel != null) {
             for (BlockModelPart part : overlayModel.collectParts(rand)) {
                 ChunkSectionLayer layer = part.layer();
