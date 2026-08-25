@@ -9,6 +9,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
@@ -55,7 +57,8 @@ public class AptOresForgeClient {
         // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded, baked,
         // and stitched into the block atlas even though no real block/item references them.
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            Block overlayBlock = new Block(BlockBehaviour.Properties.of());
+            Block overlayBlock = new Block(BlockBehaviour.Properties.of()
+                .setId(ResourceKey.create(Registries.BLOCK, overlayBlockStateId(type))));
             OVERLAY_BLOCKS.put(type, overlayBlock);
             event.register(overlayBlockStateId(type), overlayBlock.getStateDefinition());
         }
