@@ -10,7 +10,7 @@ import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraftforge.api.distmarker.Dist;
@@ -30,12 +30,25 @@ import java.util.Map;
  *
  * <p>Regular (Minecraft)Forge 1.21.9 still has no {@code ModelEvent.RegisterAdditional}-style hook
  * (or a {@code standaloneModels()} baking-result facility like NeoForge's) for pinning a model
- * that no blockstate or item references. Instead, each overlay model is shadowed by a synthetic,
- * never-registered {@link Block} whose {@link StateDefinition} is registered via
- * {@code ModelEvent.RegisterModelStateDefinitions} - the vanilla blockstate-model loader then
- * bakes {@code assets/aptores/blockstates/overlay_*.json} for it exactly like a real block, and
- * the result shows up in {@link net.minecraft.client.resources.model.ModelBakery.BakingResult#blockStateModels()}
- * keyed by that synthetic block's default state.
+ * that no blockstate or item references. Instead, each overlay model is shadowed by a synthetic
+ * {@link StateDefinition} registered via {@code ModelEvent.RegisterModelStateDefinitions} - the
+ * vanilla blockstate-model loader then bakes {@code assets/aptores/blockstates/overlay_*.json} for
+ * it exactly like a real block, and the result shows up in
+ * {@link net.minecraft.client.resources.model.ModelBakery.BakingResult#blockStateModels()} keyed
+ * by a state we control.
+ *
+ * <p>{@link #newOverlayStateDefinition()} builds each {@link StateDefinition}/{@link BlockState}
+ * pair directly via {@link StateDefinition}'s own public builder API - the same one vanilla's
+ * {@link Block} constructor uses internally - rather than constructing a throwaway {@code Block}
+ * to get one. A never-registered {@code Block} instance still unconditionally registers an
+ * intrusive registry holder in its constructor, and that holder fails {@code
+ * NamespacedWrapper.freeze()}'s "was every registry object registered?" check at startup ({@code
+ * IllegalStateException: Some intrusive holders were not registered}) since the {@code Block} is
+ * never actually registered. {@link Blocks#STONE} is only borrowed as the (never-invoked for a
+ * property-less definition) generic owner reference; each call still produces its own distinct
+ * {@link BlockState} object (default {@code Object} identity, since {@code BlockState} doesn't
+ * override {@code equals}/{@code hashCode}), which is what lets {@link #onModifyBakingResult} key
+ * {@link #OVERLAY_STATES} off it safely below.
  */
 @Mod.EventBusSubscriber(modid = AptOres.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class AptOresForgeClient {
@@ -48,17 +61,21 @@ public class AptOresForgeClient {
         return ResourceLocation.fromNamespaceAndPath(modelId.getNamespace(), modelId.getPath().replaceFirst("^block/", ""));
     }
 
+    /** A fresh, single-state {@link StateDefinition} - see the class javadoc for why. */
+    private static StateDefinition<Block, BlockState> newOverlayStateDefinition() {
+        return new StateDefinition.Builder<Block, BlockState>(Blocks.STONE)
+            .create(Block::defaultBlockState, BlockState::new);
+    }
+
     @SubscribeEvent
     public static void onRegisterModelStateDefinitions(ModelEvent.RegisterModelStateDefinitions event) {
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
         OVERLAY_STATES.clear();
 
         for (OreTypeDefinition type : OreTypeRegistry.all()) {
-            Block dummy = new Block(BlockBehaviour.Properties.of());
-            @SuppressWarnings("unchecked")
-            StateDefinition<Block, BlockState> stateDefinition = (StateDefinition<Block, BlockState>) dummy.getStateDefinition();
+            StateDefinition<Block, BlockState> stateDefinition = newOverlayStateDefinition();
             event.register(overlayBlockId(type), stateDefinition);
-            OVERLAY_STATES.put(type, dummy.defaultBlockState());
+            OVERLAY_STATES.put(type, stateDefinition.any());
         }
     }
 
