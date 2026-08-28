@@ -1,6 +1,7 @@
 package grill24.aptores.neoforge;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.AptOresConfig;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
@@ -24,6 +25,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.IModBusEvent;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.client.event.ModelEvent;
 import net.neoforged.neoforge.client.model.standalone.StandaloneModelBaker;
 import net.neoforged.neoforge.client.model.standalone.StandaloneModelKey;
@@ -56,6 +58,7 @@ public class AptOresNeoForgeClient implements IModBusEvent {
 
     @SubscribeEvent
     public static void onRegisterStandalone(ModelEvent.RegisterStandalone event) {
+        AptOresConfig.load(FMLPaths.CONFIGDIR.get());
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
 
         OVERLAY_KEYS.clear();
