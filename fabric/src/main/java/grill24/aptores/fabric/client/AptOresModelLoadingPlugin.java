@@ -1,6 +1,7 @@
 package grill24.aptores.fabric.client;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.AptOresConfig;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
@@ -8,6 +9,7 @@ import grill24.aptores.fabric.client.model.AptOresBlockStateModel;
 import net.fabricmc.fabric.api.client.model.loading.v1.ExtraModelKey;
 import net.fabricmc.fabric.api.client.model.loading.v1.ModelLoadingPlugin;
 import net.fabricmc.fabric.api.client.model.loading.v1.SimpleUnbakedExtraModel;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -26,6 +28,7 @@ public final class AptOresModelLoadingPlugin {
 
     public static void register() {
         ModelLoadingPlugin.register(context -> {
+            AptOresConfig.load(FabricLoader.getInstance().getConfigDir());
             OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
             OverlayModelRegistry.reset();
 
