@@ -2,6 +2,14 @@ plugins {
     id 'dev.architectury.loom' version '1.17-SNAPSHOT' apply false
     id 'architectury-plugin' version '3.5-SNAPSHOT'
     id 'com.gradleup.shadow' version '8.3.6' apply false
+    id 'net.darkhax.curseforgegradle' version '1.1.26' apply false
+}
+
+// Load local.properties for CurseForge token/project id (git-ignored)
+if (file('local.properties').exists()) {
+    def localProps = new Properties()
+    file('local.properties').withInputStream { localProps.load(it) }
+    localProps.each { key, value -> ext.set(key, value) }
 }
 
 architectury {
@@ -60,4 +68,40 @@ subprojects {
         repositories {
         }
     }
+}
+
+// ── CurseForge Publishing ────────────────────────────────────────────────
+
+import net.darkhax.curseforgegradle.TaskPublishCurseForge
+
+tasks.register('publishCurseForge', TaskPublishCurseForge) {
+    apiToken = System.getenv('CURSEFORGE_TOKEN') ?: findProperty('curseforge_token') ?: ''
+
+    def projectId = findProperty('curseforge_project_id') ?: '0'
+    def releaseType = findProperty('release_type') ?: 'release'
+    def changelogText = findProperty('changelog_override')
+            ?: (file('CHANGELOG.md').exists() ? file('CHANGELOG.md').text : 'No changelog provided.')
+
+    // remapJar exists on the remapping Loom variant (older, obfuscated MC versions); branches on
+    // loom-no-remap (MC 26.1+, unobfuscated) have no remap step, so shadowJar is the final jar.
+    def platformJar = { String platform ->
+        def platformTasks = project(":$platform").tasks
+        platformTasks.findByName('remapJar') ?: platformTasks.named('shadowJar').get()
+    }
+
+    [Fabric: 'fabric', NeoForge: 'neoforge', Forge: 'forge'].each { loaderName, platform ->
+        def jarFile = platformJar(platform).archiveFile
+        def platformUpload = upload(projectId, jarFile)
+        platformUpload.changelog = changelogText
+        platformUpload.changelogType = 'markdown'
+        platformUpload.releaseType = releaseType
+        platformUpload.addGameVersion(minecraft_version)
+        platformUpload.addModLoader(loaderName)
+        platformUpload.displayName = jarFile.get().asFile.name.replace('.jar', '')
+    }
+}
+
+// Ensure publish depends on all platforms being built.
+tasks.named('publishCurseForge') {
+    dependsOn(':fabric:build', ':neoforge:build', ':forge:build')
 }
