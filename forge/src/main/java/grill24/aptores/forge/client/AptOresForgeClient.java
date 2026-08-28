@@ -1,6 +1,7 @@
 package grill24.aptores.forge.client;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.AptOresConfig;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
@@ -13,6 +14,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ModelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.util.Map;
 
@@ -34,6 +36,7 @@ public class AptOresForgeClient {
 
     @SubscribeEvent
     public static void onRegisterAdditionalModels(ModelEvent.RegisterAdditional event) {
+        AptOresConfig.load(FMLPaths.CONFIGDIR.get());
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
 
         // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded,
