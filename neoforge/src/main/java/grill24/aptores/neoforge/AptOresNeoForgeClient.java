@@ -1,6 +1,7 @@
 package grill24.aptores.neoforge;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.AptOresConfig;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
@@ -13,6 +14,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.client.event.ModelEvent;
 import net.neoforged.neoforge.client.model.standalone.SimpleUnbakedStandaloneModel;
 import net.neoforged.neoforge.client.model.standalone.StandaloneModelKey;
@@ -36,6 +38,7 @@ public class AptOresNeoForgeClient {
     }
 
     private void onRegisterStandalone(ModelEvent.RegisterStandalone event) {
+        AptOresConfig.load(FMLPaths.CONFIGDIR.get());
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
         OverlayModelRegistry.reset();
 
