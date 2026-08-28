@@ -53,6 +53,8 @@ subprojects {
         }
     }
 
+    ext.javaVersion = 21
+
     tasks.withType(JavaCompile).configureEach {
         it.options.release = 21
     }
@@ -97,6 +99,9 @@ tasks.register('publishCurseForge', TaskPublishCurseForge) {
         platformUpload.releaseType = releaseType
         platformUpload.addGameVersion(minecraft_version)
         platformUpload.addModLoader(loaderName)
+        // Apt Ores is a purely client-side rendering effect - no server-side behavior.
+        platformUpload.addEnvironment('Client')
+        platformUpload.addJavaVersion("Java ${project(':' + platform).javaVersion}")
         platformUpload.displayName = jarFile.get().asFile.name.replace('.jar', '')
     }
 }
