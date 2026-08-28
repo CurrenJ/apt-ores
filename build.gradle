@@ -27,7 +27,9 @@ subprojects {
     apply plugin: 'maven-publish'
 
     base {
-        archivesName = "$rootProject.archives_name-$project.name"
+        // e.g. 1.21.1-aptores-neoforge-0.2.0.jar - MC version prefix lets CurseForge downloads
+        // stay identifiable once separated from the per-version release page.
+        archivesName = "$rootProject.minecraft_version-$rootProject.archives_name-$project.name"
     }
 
     repositories {
