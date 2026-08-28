@@ -5,6 +5,9 @@ Thumbs.db
 .gradle
 build
 
+## architectury loom
+.architectury-transformer
+
 ## Run directories
 /run
 /Forge/run
