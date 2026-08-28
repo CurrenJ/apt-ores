@@ -83,7 +83,12 @@ public final class BackdropSampler {
             return false;
         }
         // Exclude grass and tinted blocks that shouldn't be used as backdrops
-        return !isBlacklistedBlock(state);
+        if (isBlacklistedBlock(state)) {
+            return false;
+        }
+        // Respect the optional client config whitelist (config/aptores.json) - if set, only
+        // listed blocks/tags are eligible neighbors.
+        return AptOresConfig.isWhitelisted(state);
     }
 
     private static boolean isBlacklistedBlock(BlockState state) {

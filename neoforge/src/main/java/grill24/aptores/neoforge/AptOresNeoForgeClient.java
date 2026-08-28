@@ -1,6 +1,7 @@
 package grill24.aptores.neoforge;
 
 import grill24.aptores.AptOres;
+import grill24.aptores.AptOresConfig;
 import grill24.aptores.OreTypeDefinition;
 import grill24.aptores.OreTypeLoader;
 import grill24.aptores.OreTypeRegistry;
@@ -15,6 +16,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.IModBusEvent;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.client.event.ModelEvent;
 
 import java.util.Map;
@@ -32,6 +34,7 @@ public class AptOresNeoForgeClient implements IModBusEvent {
 
     @SubscribeEvent
     public static void onRegisterAdditionalModels(ModelEvent.RegisterAdditional event) {
+        AptOresConfig.load(FMLPaths.CONFIGDIR.get());
         OreTypeRegistry.reload(OreTypeLoader.load(Minecraft.getInstance().getResourceManager()));
 
         // Pin our overlay-only (cube_all + cutout ore texture) models so they get loaded,
